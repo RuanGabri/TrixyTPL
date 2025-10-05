@@ -7,5 +7,5 @@ docs
 #ignora css, html, pthml e txt
 *.css
 *.html
-*.pthml
+*.phtml
 *.txt
