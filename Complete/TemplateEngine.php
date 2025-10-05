@@ -89,7 +89,7 @@ if (!function_exists("processFilter")) {
           case 'date':
             $time = strtotime($str);
             $format = $params[0] ?? '';
-            trim(date($format, $time), "'\"");
+            $str = trim(date($format, $time), "'\"");
             break;
 
           case 'number_format':

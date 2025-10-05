@@ -1,162 +1,232 @@
-# Template Engine – Documentação
+# Template Engine — Documentação (versão atual)
 
-Este sistema implementa um **parser e renderer de templates** em PHP.
-Ele permite **variáveis, laços, condicionais** e **debug da árvore de nós**.
-
----
-
-## 1. Estrutura geral
-
-O fluxo básico é:
-
-1. **Template** → carrega o arquivo de template (`.tpl` ou `.html`).
-2. **TemplateParser** → transforma o HTML com marcações especiais em uma árvore de **Node**.
-3. **TemplateRenderer** → percorre a árvore e renderiza o resultado substituindo variáveis e avaliando condições.
-4. **ConditionParser** → usado para interpretar e avaliar expressões condicionais (`if`, `elseif`).
-5. **NodeDebugger** → permite visualizar a árvore de nós para debug.
+**Resumo rápido (sem enrolação):** este documento descreve a versão atual do motor de templates em PHP — parser, AST de `Node`, renderer, parser de condições, debugger e utilitários. Atualizado para refletir o código fonte fornecido (funções globais e classes: `Node`, `replaceVar`, `processFilter`, `split_args`, `resolveValue`, `NodeDebugger`, `TemplateParser`, `ConditionParser`, `TemplateRenderer`, `Template`).
 
 ---
 
-## 2. Sintaxe do Template
+## 1. Visão geral / fluxo
 
-### 2.1 Variáveis
+1. **Template** — carrega o arquivo `.tpl`/`.html`.
+2. **TemplateParser** — transforma o texto em uma árvore de `Node` (AST).
+3. **ConditionParser** — quando há expressões condicionais, constrói uma AST específica para avaliação.
+4. **TemplateRenderer** — percorre a árvore e gera o output final, usando `replaceVar` para variáveis e `processFilter` para filtros.
+5. **NodeDebugger** — visualização amigável da árvore para depuração.
 
-As variáveis são delimitadas por `{ ... }`:
+O motor foi projetado para ser simples, previsível e seguro (usa `htmlspecialchars` nas saídas de variáveis por padrão).
 
-```python
-{nome}
-{usuario.email}
-{endereco.rua}
+---
+
+## 2. Conceitos principais
+
+### Node
+
+A entidade básica da AST. Estrutura pública (propriedades):
+
+* `type` — tipo do nó (`root`, `text`, `if`, `elseif`, `else`, `for`, `foreach`, `require`, `str_filter`, `comparison`, `and`, `or`, `not`, `literal`, etc.).
+* `content` — conteúdo do nó (string, array de `Node`s ou outros valores conforme o tipo).
+* `params` — parâmetros do nó (ex.: `condition`, `times`, `listname`, `item`, `key`, `archive`, etc.).
+* `dependents` — nós dependentes (ex.: `elseif`/`else` ligados a um `if`).
+
+### Contextos de dados
+
+* **Global**: array passado em `Template::render($data)`; contém dados acessíveis por nome de variável.
+* **Local**: contexto interno gerado para loops/iteração; contém variáveis injetadas (ex.: item do `foreach`, `loop_index`, chave).
+
+---
+
+## 3. Sintaxe do template
+
+### 3.1 Variáveis
+
+Variáveis são escritas com chaves: `{nome}`, `{usuario.email}`, `{pedido.total}`.
+
+* Suporta *dot notation* para acessar subcampos.
+* Na renderização, `_todas_` as variáveis passam por `htmlspecialchars` (ENT_QUOTES, UTF-8).
+* **Filtros simples** em variáveis: `{nome|upper}` — o filtro deve ser um único identificador (apenas `\w+`).
+
+**Exemplo:**
+
+```html
+Olá, {nome}! Seu e-mail: {usuario.email}.
 ```
 
-* Suporta **dot notation** para acessar subcampos (`usuario.nome`).
-* O parser substitui pela variável correspondente no array `$data` passado ao `render()`.
+### 3.2 Condicionais
 
-Exemplo:
+Blocos condicionais usam colchetes e chaves com sintaxe:
 
-```python
-Olá, {nome}! Seu email é {usuario.email}.
-```
-
----
-
-### 2.2 Condicionais
-
-A sintaxe de **if/elseif/else**:
-
-```js
-[if usuario.idade >= 18 {
-  Você é maior de idade.
-} elseif usuario.idade >= 16 {
-  Você é quase maior.
+```text
+[if <expressão> {
+  ...
+} elseif <expressão> {
+  ...
 } else {
-  Você é menor de idade.
+  ...
 }]
 ```
 
-* Operadores suportados: `==`, `=`, `!=`, `!==`, `===`, `>`, `<`, `>=`, `<=`
-* Conectivos: `&&`, `||`, `!`
-* Parênteses `()` são aceitos para agrupar condições.
+* Operadores suportados: `==`, `=`, `!=`, `!==`, `===`, `>`, `<`, `>=`, `<=`.
+* Conectivos: `&&`, `||`, `!`.
+* Parênteses `()` são aceitos e respeitados pela prioridade.
 
----
+*Observação:* o `ConditionParser` tokeniza comparações e monta uma AST composta por nós `comparison`, `and`, `or`, `not` e `literal`.
 
-### 2.3 Loops
+### 3.3 Loops
 
 #### For
 
-```js
+```text
 [for 3 {
   Iteração: {loop_index}
 }]
 ```
 
-* Executa o bloco **3 vezes**.
-* A variável especial `{loop_index}` está disponível.
+* Repete o bloco N vezes. `loop_index` (0-based) está disponível no contexto local.
 
 #### Foreach
 
-```js
+```text
 [foreach usuarios as usuario {
-  Nome: {usuario.nome}, Email: {usuario.email}
+  Nome: {usuario.nome}
 }]
 ```
 
 Com chave e valor:
 
-```js
+```text
 [foreach pedidos as id => pedido {
   Pedido #{id}: {pedido.valor}
 }]
 ```
 
----
+* `item` e `key` são injetados no contexto local do bloco.
+* `loop_index` também é criado para cada iteração.
 
-## 3. Exemplos completos
+### 3.4 Require (inclusão)
 
-### Exemplo 1 – Template simples
+Sintaxe suportada:
 
-```html
-<h1>Olá, {nome}!</h1>
-
-[if usuario.idade >= 18 {
-  <p>Bem-vindo(a), você pode acessar os conteúdos +18.</p>
-} else {
-  <p>Você ainda não tem permissão.</p>
-}]
+```
+[require "arquivo.tpl"]
+[require 'outro.tpl']
+[require nome_variavel]   # resolveValue() é chamado para obter o nome
 ```
 
-### Exemplo 2 – Lista
+* O motor usa `TemplateParser::requireParser()` para ler o arquivo e inserir a subárvore.
+* Se o arquivo não existir, `showRunTimeExcept()` é chamado (lança e imprime uma RuntimeException amigável).
 
-```html
-<h2>Usuários:</h2>
-<ul>
-  [foreach usuarios as user {
-    <li>{user.nome} ({user.email})</li>
-  }]
-</ul>
+### 3.5 str_filter
+
+Forma para aplicar filtros complexos diretamente sobre uma string literal ou expressão:
+
 ```
+[str_filter("texto qualquer", (filter1, filter2(param1,param2)))]
+```
+
+Internamente o parser avalia o primeiro argumento com `resolveValue()` e cada filtro com `processFilter()`.
 
 ---
 
-## 4. Debug
+## 4. Filtros (processFilter)
 
-Para inspecionar a árvore de parsing:
+Dois modos:
+
+* **Filtro simples** (nome): usado via `{var|upper}` ou via `str_filter` (quando fornecido apenas o nome). Implementados: `strip_tags`, `trim`, `nl2br`, `upper`, `lower`, `capitalize`, `ufirst`, `length`.
+
+* **Filtro complexo** (com sintaxe de função): servido por `processFilter` quando a string do filtro tem a forma `name(params...)`. Implementados no código atual:
+
+  * `date(format)` — converte string para data via `strtotime` e `date(format, time)` (atenção: comportamento atual precisa atribuir o resultado à variável `$str`).
+  * `number_format(decimals, decimal_sep, thousands_sep)` — wrapper para `number_format`.
+  * `replace(search, replace, countFlag)` — `str_replace` (o tratamento do parâmetro `count` tem comportamento especial se for `true`).
+  * `round(precision, mode)` — suporta modos por nome (`ROUND_HALF_UP`, etc.) ou valor numérico.
+  * `truncate(limit, suffix)` — recorta strings via `str_truncate()`.
+
+**Uso recomendado:** para operações com parâmetros, use `str_filter` ou aplique os filtros simples via `{var|upper}`.
+
+---
+
+## 5. Funções utilitárias importantes
+
+* `replaceVar($block, $global, $local)` — encontra `{var}` e `{var|filter}` no bloco e substitui, resolvendo dot-notation e aplicando `htmlspecialchars` + `processFilter`.
+
+* `processFilter(string $str, string|null $filter, $global, $local)` — aplica filtros simples ou complexos.
+
+* `split_args($separator, $str, $starts = "([{", $ends = ")]}")` — explode inteligente que respeita parênteses, colchetes e aspas.
+
+* `str_truncate($str, $limit, $suffix)` — recorta string adicionando sufixo quando necessário.
+
+* `resolveValue(string $str, $global, $local)` — interpreta literais (strings entre aspas), arrays literais (`[...]`), números, booleans (`true/false/null`) ou resolve variáveis via `replaceVar`.
+
+* `trim_once($str, $start, $end = '')` — remove o caractere inicial/final se coincidir.
+
+* `showRunTimeExcept($message)` — lança e imprime uma `RuntimeException` com rastreamento para debug (útil em desenvolvimento).
+
+---
+
+## 6. ConditionParser — detalhes de avaliação
+
+* `tokenizer()` produz tokens: `(`, `)`, `&&`, `||`, `!` e nós `comparison` (que carregam `left`, `op`, `right`).
+* `parseCondition()` monta uma estrutura com `and`/`or` e nós `not` quando apropriado.
+* `evaluateNode(Node $node, $global, $local)` — avalia recursivamente a AST de condição; o nó `comparison` usa `resolveValue()` para ler valores à esquerda/direita e aplica o operador.
+
+---
+
+## 7. TemplateRenderer — comportamento de render
+
+* `render($root, $global, $local)` chama `renderNode()` recursivamente.
+* `text` — retorna `replaceVar(text, global, local)`.
+* `root` — concatena saída dos filhos.
+* `for` — executa N vezes, criando `loop_index` em contexto local.
+* `foreach` — itera sobre `$global[listname]` (se for *iterable*), injeta `item`, `key` e `loop_index` no contexto local.
+* `if`/`elseif` — avalia a condição via `ConditionParser::evaluateNode`; se `false`, itera `dependents` na ordem (first matching `elseif` ou `else`).
+* `str_filter` — avalia `str` e aplica os filtros listados.
+* Todas as substituições de variável passam por `htmlspecialchars` por padrão.
+
+---
+
+## 8. NodeDebugger — uso
+
+* `NodeDebugger::dump($root)` — imprime texto bruto (CLI/browser).
+* `NodeDebugger::toHtml($root, $opts)` — imprime HTML com a árvore dentro de `<pre>` (opções: `maxDepth`, `trimText`, `showEmpty`).
+
+Exemplo de uso na aplicação:
 
 ```php
 $template = new Template("exemplo.tpl");
 $template->debug($data);
 ```
 
-Isso renderiza uma árvore hierárquica no navegador, mostrando os `Node`s e seus parâmetros.
+---
+
+## 9. API pública — classe Template
+
+* `new Template($filename)` — lê o arquivo; emite erro amigável se não existir.
+* `render(array $data)` — parseia e imprime (echo) o resultado renderizado.
+* `debug(array $data)` — mostra a árvore com `NodeDebugger::toHtml()`.
 
 ---
 
-## 5. Classes principais
+## 10. Exemplos rápidos
 
-* **Node** → Estrutura de árvore (tipo, conteúdo, parâmetros e dependentes).
-* **TemplateParser** → Constrói a árvore a partir do HTML com marcações.
-* **ConditionParser** → Tokeniza e interpreta condições.
-* **TemplateRenderer** → Renderiza a árvore substituindo variáveis e executando lógica.
-* **NodeDebugger** → Ferramenta de debug para visualizar a árvore.
+Template (`exemplo.tpl`):
 
----
+```html
+<h1>Olá, {nome}!</h1>
+[if usuario.idade >= 18 {
+  <p>Maior de idade</p>
+} else {
+  <p>Menor de idade</p>
+}]
+```
 
-## 6. Observações
+Render (PHP):
 
-* Strings podem ser usadas em comparações:
-
-  ```js
-  [if usuario.status == "ativo" { ... }]
-  ```
-* O motor usa `htmlspecialchars` na substituição de variáveis → evita XSS.
-* Loops (`for` e `foreach`) têm suporte à variável `loop_index`.
-
----
-
-## 7. Futuras extensões
-
-* **Include de templates** (`[include ...]`).
-* **Custom tags** (ex: `[date format="Y-m-d"]`).
-* **Filtros** para variáveis (ex: `{nome|upper}`).
+```php
+$t = new Template('exemplo.tpl');
+$t->render(['nome' => 'Rian', 'usuario' => ['idade' => 25]]);
+```
 
 ---
+
+## 12. Futuras extensões
+
+1. Sistema de cache.
