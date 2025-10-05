@@ -13,6 +13,312 @@
     $this->dependents = $depedents;
   }
 }
+if (!function_exists("replaceVar")) {
+  function replaceVar($block, $global, $local = [])
+  {
+
+    return preg_replace_callback(
+      '/\{\s*
+      (?P<var>[a-zA-Z_]\w*  (?:\.[a-zA-Z_0-9]\w*)*)
+        (?:\s*\|\s*
+            (?P<filter>\w+) # {var| f1}
+        )?
+      \s*\}/xs',
+      function ($m) use ($global, $local) {
+        $var = $m["var"];
+        $filter = $m["filter"] ?? null;
+        $data = $global ?? '';
+        $return = '';
+
+        $path = explode(".", $var);
+        $first = array_shift($path);
+
+        if (is_array($local)) $data = (array_key_exists($first, $local)) ?
+          $local[$first] : ($global[$first] ?? '');
+
+        $index = $data;
+        foreach ($path as $i) {
+          if (is_array($index) && array_key_exists($i, $index)) {
+
+            $index = $index[$i];
+          } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
+
+            $index = $index[$i];
+          } else if (
+            is_object($index) &&
+            (property_exists($index, $i) || isset($index->$i))
+          ) {
+
+            $index = $index->$i;
+          } else {
+
+            $index = null;
+            break;
+          }
+        }
+        $return = (isset($index)) ? $index : '';
+        $return = htmlspecialchars((string)$return, ENT_QUOTES, 'UTF-8');
+
+        $return = processFilter($return, $filter, $global, $local);
+
+        return $return;
+      },
+      $block
+    );
+  }
+}
+if (!function_exists("processFilter")) {
+  function processFilter(
+    string $str,
+    string | null $filter,
+    array | object $global,
+    array | object $local = []
+  ): string {
+    // se houver processa os filtros
+    if (isset($filter) && !empty($filter)) {
+      // se houver processa os filtros complexos
+      if (preg_match('/^(?P<command>\w+)\((?P<params>.*?)\)$/', $filter, $m)) {
+        $command = (isset($m['command'])) ? trim($m['command']) : '';
+        $params = (isset($m['params'])) ? trim($m['params']) : '';
+        $params = split_args(",", $params);
+        foreach ($params as $key => $value) {
+          $params[$key] = resolveValue($value, $global, $local);
+        }
+
+        switch ($command) {
+          case 'date':
+            $time = strtotime($str);
+            $format = $params[0] ?? '';
+            trim(date($format, $time), "'\"");
+            break;
+
+          case 'number_format':
+            $number = (is_numeric($str)) ? (float)$str : 0;
+            $decimals = (isset($params[0]) && $params[0] != '') ? (int)$params[0] : 2;
+            $decimal_separator = (isset($params[1])) ? (string)$params[1] : ".";
+            $thousands_separator = (isset($params[2])) ? (string)$params[2] : ",";
+            $str = number_format($number, $decimals, $decimal_separator, $thousands_separator);
+            break;
+
+
+          case 'replace':
+            $search = (isset($params[0]) && $params[0] != '') ? $params[0] : '';
+            $replace = (isset($params[1])) ? (string)$params[1] : '';
+            $count = (isset($params[2]) && $params[2] != '') ? (bool)$params[2] : false;
+
+            if ($count || $count == "true") {
+              str_replace($search, $replace, $str, $count);
+              $str = $count;
+              break;
+            }
+            $str = str_replace($search, $replace, $str, $count);
+            break;
+          case 'round':
+            $precision = (isset($params[0]) && $params[0] != '') ? (float)$params[0] : 1;
+            $mode = (isset($params[1]) && $params[1] != '') ? $params[1] : 0;
+            if (is_string($mode)) {
+              switch ($mode) {
+                case "ROUND_HALF_UP":
+                  $mode = PHP_ROUND_HALF_UP;
+                  break;
+                case "ROUND_HALF_DOWN":
+                  $mode = PHP_ROUND_HALF_DOWN;
+                  break;
+                case "ROUND_HALF_EVEN":
+                  $mode = PHP_ROUND_HALF_EVEN;
+                  break;
+                case "ROUND_HALF_ODD":
+                  $mode = PHP_ROUND_HALF_ODD;
+                  break;
+                default:
+                  $mode = 0;
+              }
+            }
+            $str = round($str, $precision, $mode);
+            break;
+          case 'truncate':
+            $limit = (isset($params[0]) && $params[0] != '') ? (int)$params[0] : 10;
+            $suffix = (isset($params[1]) && $params[1] != '') ? (string)$params[1] : '...';
+
+            $str = str_truncate($str, $limit, $suffix);
+            break;
+        }
+      } else {
+        // se houver processa os filtros simples
+        switch ($filter) {
+          case "strip_tags":
+            $str = strip_tags($str);
+            break;
+          case "trim":
+            $str = trim($str);
+            break;
+          case "nl2br":
+            $str = nl2br($str);
+            break;
+          case "upper":
+            $str = strtoupper($str);
+            break;
+          case "lower":
+            $str = strtolower($str);
+            break;
+          case "capitalize":
+            $str = ucwords($str);
+            break;
+          case "ufirst":
+            $str = ucfirst($str);
+            break;
+          case "length":
+            $str = strlen($str);
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    return $str;
+  }
+}
+if (!function_exists("split_args")) {
+  //Dá um explode apenas em separatodes que não estão entre aspas ou entre parenteses
+
+  function split_args(
+    string $separator,
+    string $str,
+    string $starts = "([{",
+    string $ends = ")]}"
+  ): array {
+
+    $str = trim($str);
+    $result = [];
+    $buffer = '';
+    $depth = 0;
+    $inQuotes = false;
+    $quoteChar = null;
+    $len = strlen($str);
+
+    for ($i = 0; $i < $len; $i++) {
+      $ch = $str[$i];
+
+      // alterna estado de aspas
+      if (($ch === '"' || $ch === "'") && ($i === 0 || $str[$i - 1] !== '\\')) {
+        if ($inQuotes && $ch === $quoteChar) {
+          $inQuotes = false;
+          $quoteChar = null;
+        } elseif (!$inQuotes) {
+          $inQuotes = true;
+          $quoteChar = $ch;
+        }
+      }
+
+      if (!$inQuotes) {
+        if (str_contains($starts, $ch)) {
+          $depth++;
+        } elseif (str_contains($ends, $ch)) {
+          $depth--;
+        }
+      }
+
+      // separa por vírgula, mas só no nível zero
+      if ($ch === $separator && $depth === 0 && !$inQuotes) {
+        $result[] = trim($buffer);
+        $buffer = '';
+      } else {
+        $buffer .= $ch;
+      }
+    }
+
+    if (strlen(trim($buffer)) > 0) {
+      $result[] = trim($buffer);
+    }
+
+    return $result;
+
+    // $pattern = '/' . $separator . '(?=(?:[^()]*\([^()]*\))*[^()]*$)(?=(?:[^[]]*\([^\[]]*\))*[^()]*$)(?=(?:[^"]*"[^"]*")*[^"]*$)/';
+    // $args = preg_split($pattern, $str);
+    // return array_map(fn($p) => trim($p, " '\""), $args);
+  }
+}
+if (!function_exists("str_truncate")) {
+  //recorta string até um limite e,se recortar, adicionar um sulfixo
+
+  function str_truncate(
+    string $str,
+    int $limit,
+    string $suffix = "..."
+  ): string {
+    $len = strlen($str);
+
+    if ($len > $limit) {
+      $prefix = substr($str, 0, $limit);
+      return $prefix . $suffix;
+    }
+    return $str;
+  }
+}
+if (!function_exists("resolveValue")) {
+  /*Verifica se certa string é um número, string literal ou 
+  uma variável e retorna seu valor correto*/
+  function resolveValue(string $str, array|object $global, array|object $local = []): string|float|array
+  {
+    if (isset($str) && $str !== '') {
+      // verifica se a string é literal ou variável
+      if (preg_match('/^([\'"])(.*)\1$/s', $str, $m)) {
+        // literal string entre aspas - desempacota e unescapa
+        $str = stripcslashes($m[2]);
+      } // verifica se é um array
+      else if (preg_match('/^\[.*\]$/s', $str, $m)) {
+        $array = split_args(",", trim_once($m[0], "[", "]"));
+        foreach ($array as $key => $value) {
+          $array[$key] = resolveValue(
+            $value,
+            $global,
+            $local
+          );
+        }
+
+        $str = $array;
+      } //verifica se é um número
+      else if (preg_match('/^-?\d+(\.\d+)?$/', $str)) {
+        $str = (float) $str;
+      } // verifica se é booleano ou null
+      else if (in_array(strtolower($str), ["true", "false", "null"])) {
+        $map = ['true' => true, 'false' => false, 'null' => null];
+        $str = $map[strtolower($str)];
+      } else {
+        // trata como variável
+        $str = replaceVar('{' . $str . '}', $global, $local);
+      }
+    }
+    return $str;
+  }
+}
+
+if (!function_exists("showRunTimeExcept")) {
+  //mostra erro
+  function showRunTimeExcept(string $message): void
+  {
+    try {
+      throw new RuntimeException($message);
+    } catch (RuntimeException $e) {
+      $errorpath = $e->getFile() . " " . $e->getLine() . "<br>" . $e->getTraceAsString();
+      echo "RuntimeException: " . $e->getMessage() . "<br>" . "<strong>" . $errorpath . "</strong>";
+    }
+  }
+}
+if (!function_exists("trim_once")) {
+  //mostra erro
+  function trim_once(string $str, string $start, string $end = ''): string
+  {
+    $end = (isset($end) && !empty($end) ? $end : $start);
+    if ($str[0] === $start && $str[-1] === $end) {
+      $str = substr($str, 1, -1);
+    }
+    return $str;
+  }
+}
+
+
+
 /**
  * NodeDebugger
  * Impressão organizada de uma árvore de Node.
@@ -157,17 +463,18 @@ class NodeDebugger
   }
 }
 
-
 //Transforma html com comando em arvore em hierarquia de comandos
 class TemplateParser
 {
 
   private $html; //html do template original
+  private $global; //html do template original
   public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string)
+  public function __construct(string $string, $global)
   {
     $this->html = $string;
+    $this->global = $global;
     $this->root =  $this->parse($string); //Salva o html como arvore na variavel;
   }
 
@@ -176,20 +483,27 @@ class TemplateParser
     $stack = []; //cria a arvore vazia
     $current = new Node('root', []); // cria o ponteiro do pai atual e cria primeiro nível, raiz
     $stack[] = $current; //salva a raiz na arvore
-
     $pattern = '/
      (?P<foreach> \[\s*foreach\s* (?P<listname>\w+) \s+as\s* (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
     | (?P<for>\[\s*for\s*(?P<times>\d+)\s*{)
     | (?P<if>\[\s*if\s*(?P<if_condition>.*?)\s*{)
     | (?P<elseif>\[\s*else\s*if\s*(?P<elseif_condition>.*?)\s*{)
     | (?P<else>\[\s*else\s*{)
+    | (?P<require>\[\s*require\s*\(?\s*
+        (?P<archive>
+            "(?:\\\\.|[^"\\\\])*"      # aspas duplas
+          | \'(?:\\\\.|[^\'\\\\])*\'   # aspas simples
+          | [a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*  # sem aspas
+        )
+    \s*\)?\])
+    | (?P<str_filter> \[\s*str_filter\s*\(\s*(?P<str>.*?)\s*,\s*(?P<filters>.*?)\s*\)\s*])
     | (?P<close>}\s*\])
     /six';
 
     $pos = 0; //guarda a posição começando em 0.
     preg_match_all($pattern, $html, $matches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
     // encontra todos os comandos [for] etc e seus fechamentos.
-
+    $matches = $matches ?? [];
     foreach ($matches as $m) {
 
       $start = $m[0][1];
@@ -297,6 +611,30 @@ class TemplateParser
             $stack[] = $node;
           }
         }
+      } // processa o require e adiciona os dados da pagina requerida na arvore
+      elseif (isset($m['require'][0]) && $m['require'][0] !== '') {
+        $node = new Node('require', []);
+
+        $this->requireParser($node, $m['archive'][0]);
+
+        $stack[count($stack) - 1]->content[] = $node;
+      } // lê o str_filter adiciona seus dados à arvore
+      elseif (isset($m['str_filter'][0]) && $m['str_filter'][0] !== '') {
+        $node = new Node('str_filter', []);
+
+        $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
+
+        $node->params["str"] = resolveValue($str, $this->global, []);
+
+        $filters = isset($m['filters'][0]) ? (string)$m['filters'][0] : [];
+
+        $filters = trim_once($filters, "(", ")");
+        $filters = split_args(",", $filters);
+
+
+        $node->params["filters"] = $filters;
+
+        $stack[count($stack) - 1]->content[] = $node;
       }
 
       // --- Fechamento ---
@@ -311,7 +649,7 @@ class TemplateParser
       }
 
       // adiciona o número de letras do comando na posição
-      $pos = $start + strlen($m[0][0]);
+      $pos = $start + strlen($m[0][0] ?? '');
     }
     if ($pos < strlen($html)) { //verifica se ainda não acabamos o html
 
@@ -320,6 +658,26 @@ class TemplateParser
     }
 
     return $current;
+  }
+
+
+  //processa a subarvore do arquivo requerido
+  private function requireParser(Node $node, String $Filename): void
+  {
+    $content = '';
+
+    $name = $Filename ? (string)$Filename : '';
+    $name = resolveValue($name, $this->global, []);
+
+    $node->params['archive'] = $name;
+
+    if (file_exists($name)) {
+      $content = file_get_contents($name) ?? '';
+    } else {
+      showRunTimeExcept("Arquivo: " . $node->params['archive'] . " não encontrado");
+    }
+
+    $node->content[] = $this->parse($content);
   }
 }
 
@@ -507,32 +865,9 @@ class ConditionParser
       $rightRaw = $node->params['right'] ?? '';
       $opRaw    = $node->params['op'] ?? '';
 
-      // decide o valor da esquerda: literal entre aspas? número? ou variável?
-      if (is_string($leftRaw) && preg_match('/^([\'"])(.*)\1$/s', $leftRaw, $m)) {
-        // literal string entre aspas - desempacota e unescapa
-        $leftVal = stripcslashes($m[2]);
-      } elseif (is_numeric($leftRaw)) {
-        $leftVal = $leftRaw + 0;
-      } else {
-        // trata como variável
-        $leftVal = TemplateRenderer::replaceVar('{' . $leftRaw . '}', $global, $local);
-      }
+      $leftVal = resolveValue($rightRaw, $global, $local);
 
-      // decide o valor da direita: literal entre aspas? número? ou variável?
-      if (is_string($rightRaw) && preg_match('/^([\'"])(.*)\1$/s', $rightRaw, $m)) {
-        // literal string entre aspas - desempacota e unescapa
-        $rightVal = stripcslashes($m[2]);
-      } elseif (is_numeric($rightRaw)) {
-        $rightVal = $rightRaw + 0;
-      } else {
-        // trata como variável
-        $rightVal = TemplateRenderer::replaceVar('{' . $rightRaw . '}', $global, $local);
-      }
-
-      if (is_numeric($leftVal) && is_numeric($rightVal)) {
-        $leftVal  = $leftVal + 0;
-        $rightVal = $rightVal + 0;
-      }
+      $rightVal = resolveValue($rightRaw, $global, $local);
 
       $op = trim((string)$opRaw);
 
@@ -574,15 +909,14 @@ class TemplateRenderer
 
     if ($node->type === "text") {
 
-      return self::replaceVar((string)$node->content, $global, $local);
+      return replaceVar((string)$node->content, $global, $local);
     }
 
     if ($node->type === "root") {
 
       foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
       return $out;
-    }
-    if ($node->type === "for") {
+    } else if ($node->type === "for") {
       $times = (int)($node->params["times"] ?? 0);
       for ($i = 0; $i < $times; $i++) {
         $localCtx = $local;
@@ -591,8 +925,7 @@ class TemplateRenderer
         foreach ($children as $child) $out .= self::renderNode($child, $global, $localCtx);
       }
       return $out;
-    }
-    if ($node->type === "foreach") {
+    } else if ($node->type === "foreach") {
       $listName = $node->params["listname"] ?? null;
       $list = $global[$listName] ?? null;
       if (!is_iterable($list)) return ''; // nada pra iterar
@@ -613,14 +946,10 @@ class TemplateRenderer
         $idx++;
       }
       return $out;
-    }
-    if ($node->type === "if" || $node->type === "elseif") {
-      // $conditionStr = (string)($node->params['condition'] ?? '');
+    } else if ($node->type === "if" || $node->type === "elseif") {
+
       $dependents = $node->dependents ?? [];
 
-      // // parse da condição (ConditionParser retorna uma AST)
-      // $condParser = new ConditionParser($conditionStr);
-      // $condRoot = $condParser->root;
       $condRoot = $node->params['condNode'] ?? null;
       $condVal = false;
       if ($condRoot instanceof Node) {
@@ -662,7 +991,17 @@ class TemplateRenderer
       }
 
       return $out;
+    } else if ($node->type === "str_filter") {
+      $str = (isset($node->params["str"])) ? trim((string)$node->params["str"]) : '';
+      $filters = (isset($node->params["filters"])) ? (array) $node->params["filters"] : [];
+
+      foreach ($filters as $f) {
+        $str = processFilter($str, $f, $global, $local);
+      }
+
+      return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');;
     }
+
 
     if ($node->type === "else") {
       foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
@@ -672,53 +1011,8 @@ class TemplateRenderer
     foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
     return $out;
   }
-
-  public static function replaceVar($block, $global, $local = [])
-  {
-
-    return preg_replace_callback(
-      "/\{\s*
-      (?P<var>[a-zA-Z_]\w*  (?:\.[a-zA-Z_0-9]\w*)*)
-      \s*\}/xs",
-      function ($m) use ($global, $local) {
-        $var = $m["var"];
-        $data = $global ?? '';
-        $return = '';
-
-        $path = explode(".", $var);
-        $first = array_shift($path);
-
-        if (is_array($local)) $data = (array_key_exists($first, $local)) ?
-          $local[$first] : ($global[$first] ?? '');
-
-        $index = $data;
-        foreach ($path as $i) {
-          if (is_array($index) && array_key_exists($i, $index)) {
-
-            $index = $index[$i];
-          } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
-
-            $index = $index[$i];
-          } else if (
-            is_object($index) &&
-            (property_exists($index, $i) || isset($index->$i))
-          ) {
-
-            $index = $index->$i;
-          } else {
-
-            $index = null;
-            break;
-          }
-        }
-        $return = (isset($index)) ? $index : '';
-
-        return htmlspecialchars((string)$return, ENT_QUOTES, 'UTF-8');
-      },
-      $block
-    );
-  }
 }
+
 class Template
 {
 
@@ -727,19 +1021,25 @@ class Template
   public function __construct($name)
   {
     if (file_exists($name)) $this->html = file_get_contents($name);
+    else {
+      showRunTimeExcept("Template: " . $name . " não encontrado");
+    }
   }
 
   public function render(array $data)
   {
+    if (!isset($this->html)) {
+      showRunTimeExcept("Erro ao processar o html");
+    }
 
-    $parse = new TemplateParser($this->html);
+    $parse = new TemplateParser((string)$this->html, $data);
     $rend = new TemplateRenderer();
     echo $rend->render($parse->root, $data);
   }
 
   public function debug(array $data)
   {
-    $parse = new TemplateParser($this->html);
+    $parse = new TemplateParser((string)$this->html, $data);
     NodeDebugger::toHtml($parse->root, ['maxDepth' => 99999, 'trimText' => 99999, 'showEmpty' => false]);
   }
 }

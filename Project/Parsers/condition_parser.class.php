@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . "/../Utils/helpers.php";
 
 class ConditionParser
 {
@@ -184,32 +185,9 @@ class ConditionParser
       $rightRaw = $node->params['right'] ?? '';
       $opRaw    = $node->params['op'] ?? '';
 
-      // decide o valor da esquerda: literal entre aspas? número? ou variável?
-      if (is_string($leftRaw) && preg_match('/^([\'"])(.*)\1$/s', $leftRaw, $m)) {
-        // literal string entre aspas - desempacota e unescapa
-        $leftVal = stripcslashes($m[2]);
-      } elseif (is_numeric($leftRaw)) {
-        $leftVal = $leftRaw + 0;
-      } else {
-        // trata como variável
-        $leftVal = TemplateRenderer::replaceVar('{' . $leftRaw . '}', $global, $local);
-      }
+      $leftVal = resolveValue($rightRaw, $global, $local);
 
-      // decide o valor da direita: literal entre aspas? número? ou variável?
-      if (is_string($rightRaw) && preg_match('/^([\'"])(.*)\1$/s', $rightRaw, $m)) {
-        // literal string entre aspas - desempacota e unescapa
-        $rightVal = stripcslashes($m[2]);
-      } elseif (is_numeric($rightRaw)) {
-        $rightVal = $rightRaw + 0;
-      } else {
-        // trata como variável
-        $rightVal = TemplateRenderer::replaceVar('{' . $rightRaw . '}', $global, $local);
-      }
-
-      if (is_numeric($leftVal) && is_numeric($rightVal)) {
-        $leftVal  = $leftVal + 0;
-        $rightVal = $rightVal + 0;
-      }
+      $rightVal = resolveValue($rightRaw, $global, $local);
 
       $op = trim((string)$opRaw);
 

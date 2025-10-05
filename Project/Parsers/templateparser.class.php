@@ -1,18 +1,21 @@
 <?php
 
-require_once "node/node.class.php";
-require_once "render/template_renderer.class.php";
+require_once __DIR__ . "/../nodes/node.class.php";
+require_once __DIR__ . "/../render/template_renderer.class.php";
+require_once __DIR__ . "/../Utils/helpers.php";
 
 //Transforma html com comando em arvore em hierarquia de comandos
 class TemplateParser
 {
 
   private $html; //html do template original
+  private $global; //html do template original
   public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string)
+  public function __construct(string $string, $global)
   {
     $this->html = $string;
+    $this->global = $global;
     $this->root =  $this->parse($string); //Salva o html como arvore na variavel;
   }
 
@@ -21,20 +24,27 @@ class TemplateParser
     $stack = []; //cria a arvore vazia
     $current = new Node('root', []); // cria o ponteiro do pai atual e cria primeiro nível, raiz
     $stack[] = $current; //salva a raiz na arvore
-
     $pattern = '/
      (?P<foreach> \[\s*foreach\s* (?P<listname>\w+) \s+as\s* (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
     | (?P<for>\[\s*for\s*(?P<times>\d+)\s*{)
     | (?P<if>\[\s*if\s*(?P<if_condition>.*?)\s*{)
     | (?P<elseif>\[\s*else\s*if\s*(?P<elseif_condition>.*?)\s*{)
     | (?P<else>\[\s*else\s*{)
+    | (?P<require>\[\s*require\s*\(?\s*
+        (?P<archive>
+            "(?:\\\\.|[^"\\\\])*"      # aspas duplas
+          | \'(?:\\\\.|[^\'\\\\])*\'   # aspas simples
+          | [a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*  # sem aspas
+        )
+    \s*\)?\])
+    | (?P<str_filter> \[\s*str_filter\s*\(\s*(?P<str>.*?)\s*,\s*(?P<filters>.*?)\s*\)\s*])
     | (?P<close>}\s*\])
     /six';
 
     $pos = 0; //guarda a posição começando em 0.
     preg_match_all($pattern, $html, $matches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
     // encontra todos os comandos [for] etc e seus fechamentos.
-
+    $matches = $matches ?? [];
     foreach ($matches as $m) {
 
       $start = $m[0][1];
@@ -142,6 +152,30 @@ class TemplateParser
             $stack[] = $node;
           }
         }
+      } // processa o require e adiciona os dados da pagina requerida na arvore
+      elseif (isset($m['require'][0]) && $m['require'][0] !== '') {
+        $node = new Node('require', []);
+
+        $this->requireParser($node, $m['archive'][0]);
+
+        $stack[count($stack) - 1]->content[] = $node;
+      } // lê o str_filter adiciona seus dados à arvore
+      elseif (isset($m['str_filter'][0]) && $m['str_filter'][0] !== '') {
+        $node = new Node('str_filter', []);
+
+        $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
+
+        $node->params["str"] = resolveValue($str, $this->global, []);
+
+        $filters = isset($m['filters'][0]) ? (string)$m['filters'][0] : [];
+
+        $filters = trim_once($filters, "(", ")");
+        $filters = split_args(",", $filters);
+
+
+        $node->params["filters"] = $filters;
+
+        $stack[count($stack) - 1]->content[] = $node;
       }
 
       // --- Fechamento ---
@@ -156,7 +190,7 @@ class TemplateParser
       }
 
       // adiciona o número de letras do comando na posição
-      $pos = $start + strlen($m[0][0]);
+      $pos = $start + strlen($m[0][0] ?? '');
     }
     if ($pos < strlen($html)) { //verifica se ainda não acabamos o html
 
@@ -165,5 +199,25 @@ class TemplateParser
     }
 
     return $current;
+  }
+
+
+  //processa a subarvore do arquivo requerido
+  private function requireParser(Node $node, String $Filename): void
+  {
+    $content = '';
+
+    $name = $Filename ? (string)$Filename : '';
+    $name = resolveValue($name, $this->global, []);
+
+    $node->params['archive'] = $name;
+
+    if (file_exists($name)) {
+      $content = file_get_contents($name) ?? '';
+    } else {
+      showRunTimeExcept("Arquivo: " . $node->params['archive'] . " não encontrado");
+    }
+
+    $node->content[] = $this->parse($content);
   }
 }

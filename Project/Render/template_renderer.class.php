@@ -1,6 +1,6 @@
 <?php
-require_once "node/node.class.php";
-require_once "parsers/condition_parser.class.php";
+require_once __DIR__ . "/../nodes/node.class.php";
+require_once __DIR__ . "/../parsers/condition_parser.class.php";
 
 class TemplateRenderer
 {
@@ -18,15 +18,14 @@ class TemplateRenderer
 
     if ($node->type === "text") {
 
-      return self::replaceVar((string)$node->content, $global, $local);
+      return replaceVar((string)$node->content, $global, $local);
     }
 
     if ($node->type === "root") {
 
       foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
       return $out;
-    }
-    if ($node->type === "for") {
+    } else if ($node->type === "for") {
       $times = (int)($node->params["times"] ?? 0);
       for ($i = 0; $i < $times; $i++) {
         $localCtx = $local;
@@ -35,8 +34,7 @@ class TemplateRenderer
         foreach ($children as $child) $out .= self::renderNode($child, $global, $localCtx);
       }
       return $out;
-    }
-    if ($node->type === "foreach") {
+    } else if ($node->type === "foreach") {
       $listName = $node->params["listname"] ?? null;
       $list = $global[$listName] ?? null;
       if (!is_iterable($list)) return ''; // nada pra iterar
@@ -57,14 +55,10 @@ class TemplateRenderer
         $idx++;
       }
       return $out;
-    }
-    if ($node->type === "if" || $node->type === "elseif") {
-      // $conditionStr = (string)($node->params['condition'] ?? '');
+    } else if ($node->type === "if" || $node->type === "elseif") {
+
       $dependents = $node->dependents ?? [];
 
-      // // parse da condição (ConditionParser retorna uma AST)
-      // $condParser = new ConditionParser($conditionStr);
-      // $condRoot = $condParser->root;
       $condRoot = $node->params['condNode'] ?? null;
       $condVal = false;
       if ($condRoot instanceof Node) {
@@ -106,7 +100,17 @@ class TemplateRenderer
       }
 
       return $out;
+    } else if ($node->type === "str_filter") {
+      $str = (isset($node->params["str"])) ? trim((string)$node->params["str"]) : '';
+      $filters = (isset($node->params["filters"])) ? (array) $node->params["filters"] : [];
+
+      foreach ($filters as $f) {
+        $str = processFilter($str, $f, $global, $local);
+      }
+
+      return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');;
     }
+
 
     if ($node->type === "else") {
       foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
@@ -115,51 +119,5 @@ class TemplateRenderer
 
     foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
     return $out;
-  }
-
-  public static function replaceVar($block, $global, $local = [])
-  {
-
-    return preg_replace_callback(
-      "/\{\s*
-      (?P<var>[a-zA-Z_]\w*  (?:\.[a-zA-Z_0-9]\w*)*)
-      \s*\}/xs",
-      function ($m) use ($global, $local) {
-        $var = $m["var"];
-        $data = $global ?? '';
-        $return = '';
-
-        $path = explode(".", $var);
-        $first = array_shift($path);
-
-        if (is_array($local)) $data = (array_key_exists($first, $local)) ?
-          $local[$first] : ($global[$first] ?? '');
-
-        $index = $data;
-        foreach ($path as $i) {
-          if (is_array($index) && array_key_exists($i, $index)) {
-
-            $index = $index[$i];
-          } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
-
-            $index = $index[$i];
-          } else if (
-            is_object($index) &&
-            (property_exists($index, $i) || isset($index->$i))
-          ) {
-
-            $index = $index->$i;
-          } else {
-
-            $index = null;
-            break;
-          }
-        }
-        $return = (isset($index)) ? $index : '';
-
-        return htmlspecialchars((string)$return, ENT_QUOTES, 'UTF-8');
-      },
-      $block
-    );
   }
 }

@@ -1,0 +1,11 @@
+#ignora o index
+index.php
+
+#ignora a pasta docs
+docs
+
+#ignora css, html, pthml e txt
+*.css
+*.html
+*.pthml
+*.txt
