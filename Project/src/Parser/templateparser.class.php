@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . "/../nodes/node.class.php";
+require_once __DIR__ . "/../core/node.class.php";
 require_once __DIR__ . "/../render/template_renderer.class.php";
 require_once __DIR__ . "/../Utils/helpers.php";
 
@@ -12,7 +12,7 @@ class TemplateParser
   private $global; //html do template original
   public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string, $global)
+  public function __construct(string $string, array|object $global)
   {
     $this->html = $string;
     $this->global = $global;
@@ -21,12 +21,15 @@ class TemplateParser
 
   private function parse(string $html)
   {
+    // Remove comentários HTML
+    $html = preg_replace('/<!--.*?-->/s', '', $html);
+
     $stack = []; //cria a arvore vazia
     $current = new Node('root', []); // cria o ponteiro do pai atual e cria primeiro nível, raiz
     $stack[] = $current; //salva a raiz na arvore
     $pattern = '/
-     (?P<foreach> \[\s*foreach\s* (?P<listname>\w+) \s+as\s* (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
-    | (?P<for>\[\s*for\s*(?P<times>\d+)\s*{)
+     (?P<foreach> \[\s*foreach\s* (?P<listname>[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*) \s+as\s* (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
+    | (?P<for>\[\s*for\s*(?P<times>\d+|[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*)\s*{)
     | (?P<if>\[\s*if\s*(?P<if_condition>.*?)\s*{)
     | (?P<elseif>\[\s*else\s*if\s*(?P<elseif_condition>.*?)\s*{)
     | (?P<else>\[\s*else\s*{)
@@ -100,7 +103,7 @@ class TemplateParser
       // --- Abertura de for ---
       elseif (isset($m['for'][0]) && $m['for'][0] !== '') {
         $node = new Node('for', []);
-        $node->params['times'] = isset($m['times'][0]) ? (int)$m['times'][0] : 0;
+        $node->params['times'] = isset($m['times'][0]) ? $m['times'][0] : 0;
 
         $stack[count($stack) - 1]->content[] = $node;
         $stack[] = $node;
@@ -165,7 +168,7 @@ class TemplateParser
 
         $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
 
-        $node->params["str"] = resolveValue($str, $this->global, []);
+        $node->params["str"] = $str;
 
         $filters = isset($m['filters'][0]) ? (string)$m['filters'][0] : [];
 
@@ -203,19 +206,19 @@ class TemplateParser
 
 
   //processa a subarvore do arquivo requerido
-  private function requireParser(Node $node, String $Filename): void
+  private function requireParser(Node $node, String $Filename, array $local = []): void
   {
     $content = '';
 
     $name = $Filename ? (string)$Filename : '';
-    $name = resolveValue($name, $this->global, []);
+    $name = resolveValue($name, $this->global, $local);
 
     $node->params['archive'] = $name;
 
     if (file_exists($name)) {
       $content = file_get_contents($name) ?? '';
     } else {
-      showRunTimeExcept("Arquivo: " . $node->params['archive'] . " não encontrado");
+      showException("Arquivo: " . $node->params['archive'] . " não encontrado");
     }
 
     $node->content[] = $this->parse($content);

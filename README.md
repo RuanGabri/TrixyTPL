@@ -80,7 +80,8 @@ Blocos condicionais usam colchetes e chaves com sintaxe:
 }]
 ```
 
-* Repete o bloco N vezes. `loop_index` (0-based) está disponível no contexto local.
+* Repete o bloco N vezes, pode ser um número ou uma variável. 
+* `loop_index` (0-based) está disponível no contexto local.
 
 #### Foreach
 
@@ -98,6 +99,7 @@ Com chave e valor:
 }]
 ```
 
+* `listname` (a lista a ser iterada) é resolvida por `resolvepath` no contexto global
 * `item` e `key` são injetados no contexto local do bloco.
 * `loop_index` também é criado para cada iteração.
 
@@ -112,11 +114,12 @@ Sintaxe suportada:
 ```
 
 * O motor usa `TemplateParser::requireParser()` para ler o arquivo e inserir a subárvore.
+* O nome do arquivo passa por `resolveValue()`, permitindo usar variáveis no nome.
 * Se o arquivo não existir, `showRunTimeExcept()` é chamado (lança e imprime uma RuntimeException amigável).
 
 ### 3.5 str_filter
 
-Forma para aplicar filtros complexos diretamente sobre uma string literal ou expressão:
+Forma para aplicar filtros complexos diretamente sobre uma string literal, variável ou expressão:
 
 ```
 [str_filter("texto qualquer", (filter1, filter2(param1,param2)))]
@@ -132,15 +135,13 @@ Dois modos:
 
 * **Filtro simples** (nome): usado via `{var|upper}` ou via `str_filter` (quando fornecido apenas o nome). Implementados: `strip_tags`, `trim`, `nl2br`, `upper`, `lower`, `capitalize`, `ufirst`, `length`.
 
-* **Filtro complexo** (com sintaxe de função): servido por `processFilter` quando a string do filtro tem a forma `name(params...)`. Implementados no código atual:
+* **Filtro complexo** (com sintaxe de função): servido por `processFilter` e por `{var|upper}` quando a string do filtro tem a forma `name(params...)`. Implementados no código atual:
 
   * `date(format)` — converte string para data via `strtotime` e `date(format, time)` (atenção: comportamento atual precisa atribuir o resultado à variável `$str`).
   * `number_format(decimals, decimal_sep, thousands_sep)` — wrapper para `number_format`.
   * `replace(search, replace, countFlag)` — `str_replace` (o tratamento do parâmetro `count` tem comportamento especial se for `true`).
   * `round(precision, mode)` — suporta modos por nome (`ROUND_HALF_UP`, etc.) ou valor numérico.
   * `truncate(limit, suffix)` — recorta strings via `str_truncate()`.
-
-**Uso recomendado:** para operações com parâmetros, use `str_filter` ou aplique os filtros simples via `{var|upper}`.
 
 ---
 
@@ -160,6 +161,8 @@ Dois modos:
 
 * `showRunTimeExcept($message)` — lança e imprime uma `RuntimeException` com rastreamento para debug (útil em desenvolvimento).
 
+* `resolvePath(string $path, $context)` — navega em dot-notation (`path.to.value`) em arrays ou objetos.
+
 ---
 
 ## 6. ConditionParser — detalhes de avaliação
@@ -172,15 +175,9 @@ Dois modos:
 
 ## 7. TemplateRenderer — comportamento de render
 
-* `render($root, $global, $local)` chama `renderNode()` recursivamente.
-* `text` — retorna `replaceVar(text, global, local)`.
-* `root` — concatena saída dos filhos.
-* `for` — executa N vezes, criando `loop_index` em contexto local.
-* `foreach` — itera sobre `$global[listname]` (se for *iterable*), injeta `item`, `key` e `loop_index` no contexto local.
-* `if`/`elseif` — avalia a condição via `ConditionParser::evaluateNode`; se `false`, itera `dependents` na ordem (first matching `elseif` ou `else`).
-* `str_filter` — avalia `str` e aplica os filtros listados.
-* Todas as substituições de variável passam por `htmlspecialchars` por padrão.
-
+* O método principal é `renderNodeTo` (chamado por `render`), que usa um callable (`$writer`) para emitir pedaços do output. Isso é uma técnica de streaming (em vez de concatenar uma string enorme) e permite otimizações.
+* **Otimização** `for/foreach`: `childrenAreStaticText` verifica se o conteúdo do loop é composto apenas por texto sem placeholders (`{}`). Se for, o bloco é renderizado uma única vez e repetido `N` vezes com `str_repeat`, evitando a recursão do renderNodeTo em cada iteração.
+* **Condicionais**: O tratamento de `if/elseif/else` itera os `dependents` para encontrar a primeira condição verdadeira, renderizando seu conteúdo e parando.
 ---
 
 ## 8. NodeDebugger — uso
@@ -197,11 +194,38 @@ $template->debug($data);
 
 ---
 
-## 9. API pública — classe Template
+# 9. CacheManager — sistema de cache
+A classe `CacheManager` gerencia o cache da árvore de parsing e do template renderizado final.
 
-* `new Template($filename)` — lê o arquivo; emite erro amigável se não existir.
-* `render(array $data)` — parseia e imprime (echo) o resultado renderizado.
-* `debug(array $data)` — mostra a árvore com `NodeDebugger::toHtml()`.
+* **Localização:** Os caches são salvos em subpastas (`templates`, `parsers`) dentro do diretório `$cachedir` (passado para `Template`).
+
+* **Tipos de Cache:**
+
+  * `parsers`: Guarda a AST (`TemplateParser` ou subárvores) baseada no conteúdo do template.
+
+  * `templates`: Guarda o template renderizado final em string.
+
+* **Validação (Hash):** O cache é validado por um `hash_hmac("sha256", $inputs, $secret)`.
+
+  * Cache de parsers usa o conteúdo do template como `$inputs`.
+
+  * Cache de templates usa o conteúdo do template e os dados (`$data`) como `$inputs`.
+
+* Funções:
+
+  * `setCache($filename, $data, $inputs, $type, $secret)` — Serializa, comprime (`gzencode`), codifica (`base64`) e salva o cache com o hash.
+
+  * `getCache($filename, $inputs, $type, $secret)` — Recupera, verifica o hash, e deserializa (`unserialize`). Se o hash falhar, o cache é deletado (`dellCache`).
+
+  * `dellCache($filename, $type)` — Remove o arquivo de cache.
+
+---
+
+## 10. API pública — classe Template
+
+* `new Template(string $name, string $secret, string $cachedir, string $envdir)` — Construtor que lê o arquivo `$name`, define o `$secret` para o cache, o diretório `$cachedir` e carrega variáveis de ambiente de `$envdir`.
+* `render(array $data)` — Tenta obter o template renderizado do cache (`templates`). Se falhar, tenta obter a AST do cache (`parsers`). Se falhar, faz o parsing, renderiza o resultado e salva ambos os caches, exibindo o resultado com `echo`.
+* `debug(array $data)` — Tenta obter a AST do cache (`parsers`). Se falhar, faz o parsing. Em seguida, mostra a árvore com `NodeDebugger::toHtml()`.
 
 ---
 
@@ -221,7 +245,12 @@ Template (`exemplo.tpl`):
 Render (PHP):
 
 ```php
-$t = new Template('exemplo.tpl');
+// Assumindo que estas constantes estão definidas ou carregadas no .env
+$secret = 'minha_chave_secreta'; 
+$cachedir = __DIR__ . '/cache'; 
+$envdir = __DIR__ . '/.env';
+
+$t = new Template('exemplo.tpl', $secret, $cachedir, $envdir);
 $t->render(['nome' => 'Rian', 'usuario' => ['idade' => 25]]);
 ```
 
@@ -229,4 +258,7 @@ $t->render(['nome' => 'Rian', 'usuario' => ['idade' => 25]]);
 
 ## 12. Futuras extensões
 
-1. Sistema de cache.
+1. Estrutua SOLID.
+2. Sistema de salvar variáveis em contexto `global`.
+3. Sistema de realizar operações
+4. Sistema de string randômica

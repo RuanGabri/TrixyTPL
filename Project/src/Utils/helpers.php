@@ -7,7 +7,7 @@ if (!function_exists("replaceVar")) {
       '/\{\s*
       (?P<var>[a-zA-Z_]\w*  (?:\.[a-zA-Z_0-9]\w*)*)
         (?:\s*\|\s*
-            (?P<filter>\w+) # {var| f1}
+            (?P<filter>.*?) # {var| f1}
         )?
       \s*\}/xs',
       function ($m) use ($global, $local) {
@@ -43,7 +43,6 @@ if (!function_exists("replaceVar")) {
           }
         }
         $return = (isset($index)) ? $index : '';
-        $return = htmlspecialchars((string)$return, ENT_QUOTES, 'UTF-8');
 
         $return = processFilter($return, $filter, $global, $local);
 
@@ -70,12 +69,14 @@ if (!function_exists("processFilter")) {
         foreach ($params as $key => $value) {
           $params[$key] = resolveValue($value, $global, $local);
         }
+        $str = resolveValue($str, $global, $local);
 
         switch ($command) {
           case 'date':
             $time = strtotime($str);
             $format = $params[0] ?? '';
             $str = trim(date($format, $time), "'\"");
+            $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
             break;
 
           case 'number_format':
@@ -84,6 +85,7 @@ if (!function_exists("processFilter")) {
             $decimal_separator = (isset($params[1])) ? (string)$params[1] : ".";
             $thousands_separator = (isset($params[2])) ? (string)$params[2] : ",";
             $str = number_format($number, $decimals, $decimal_separator, $thousands_separator);
+            $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
             break;
 
 
@@ -95,9 +97,11 @@ if (!function_exists("processFilter")) {
             if ($count || $count == "true") {
               str_replace($search, $replace, $str, $count);
               $str = $count;
+              $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
               break;
             }
             $str = str_replace($search, $replace, $str, $count);
+            $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
             break;
           case 'round':
             $precision = (isset($params[0]) && $params[0] != '') ? (float)$params[0] : 1;
@@ -120,13 +124,21 @@ if (!function_exists("processFilter")) {
                   $mode = 0;
               }
             }
-            $str = round($str, $precision, $mode);
+            $str = round((float)$str, $precision, $mode);
+            $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
             break;
           case 'truncate':
             $limit = (isset($params[0]) && $params[0] != '') ? (int)$params[0] : 10;
             $suffix = (isset($params[1]) && $params[1] != '') ? (string)$params[1] : '...';
 
             $str = str_truncate($str, $limit, $suffix);
+            $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
+            break;
+          case 'default':
+            $default = (isset($params[0]) && $params[0] != '') ? (string)$params[0] : '';
+
+            $str = ($str !== '') ? $str : $default;
+            $str = htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');
             break;
         }
       } else {
@@ -161,7 +173,7 @@ if (!function_exists("processFilter")) {
         }
       }
     }
-    return $str;
+    return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8');;
   }
 }
 if (!function_exists("split_args")) {
@@ -244,7 +256,7 @@ if (!function_exists("str_truncate")) {
 if (!function_exists("resolveValue")) {
   /*Verifica se certa string é um número, string literal ou 
   uma variável e retorna seu valor correto*/
-  function resolveValue(string $str, array|object $global, array|object $local = []): string|float|array
+  function resolveValue(string $str, array|object $global, array|object $local = []): mixed
   {
     if (isset($str) && $str !== '') {
       // verifica se a string é literal ou variável
@@ -279,15 +291,27 @@ if (!function_exists("resolveValue")) {
   }
 }
 
-if (!function_exists("showRunTimeExcept")) {
+if (!function_exists("showException")) {
   //mostra erro
-  function showRunTimeExcept(string $message): void
+  function showException(string $message): void
   {
-    try {
-      throw new RuntimeException($message);
-    } catch (RuntimeException $e) {
-      $errorpath = $e->getFile() . " " . $e->getLine() . "<br>" . $e->getTraceAsString();
-      echo "RuntimeException: " . $e->getMessage() . "<br>" . "<strong>" . $errorpath . "</strong>";
+
+    $env = $_ENV['APP_ENV'] ?: 'production';
+    if ($env === 'development') {
+      ini_set('display_errors', 1);
+      try {
+        throw new Exception($message);
+      } catch (Exception $e) {
+        $errorpath = $e->getFile() . " " . $e->getLine() . "<br>" . $e->getTraceAsString();
+        echo "Exception: " . $e->getMessage() . "<br>" . "<strong>{$errorpath}</strong>";
+      }
+    } else {
+      ini_set('display_errors', 0);
+      try {
+        throw new Exception($message);
+      } catch (Exception $e) {
+        echo "Um erro ocorreu. Tente novamente mais tarde <br>";
+      }
     }
   }
 }
@@ -296,9 +320,29 @@ if (!function_exists("trim_once")) {
   function trim_once(string $str, string $start, string $end = ''): string
   {
     $end = (isset($end) && !empty($end) ? $end : $start);
-    if ($str[0] === $start && $str[-1] === $end) {
+    $strStart = substr($str, 0, 1);
+    $strEnd = substr($str, -1);
+    if ($strStart === $start && $strEnd === $end) {
       $str = substr($str, 1, -1);
     }
     return $str;
+  }
+}
+
+if (!function_exists("resolvePath")) {
+  //buscar hierarquicamente em um array ou abjeto
+  function resolvePath(string $path, array|object $context): array|object|bool
+  {
+    $parts = explode(".", $path);
+    foreach ($parts as $part) {
+      if (is_array($context) && array_key_exists($part, $context)) {
+        $context = $context[$part];
+      } elseif (is_object($context) && property_exists($context, $part)) {
+        $context = $context->$part;
+      } else {
+        return false; // caminho quebrado
+      }
+    }
+    return $context;
   }
 }

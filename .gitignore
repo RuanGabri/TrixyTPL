@@ -1,11 +1,13 @@
 #ignora o index
 index.php
 
-#ignora a pasta docs
+#ignora a pasta docs e cache
 docs
+Cache
 
-#ignora css, html, pthml e txt
+#ignora css, html, pthml, txt e env
 *.css
 *.html
 *.phtml
 *.txt
+*.env

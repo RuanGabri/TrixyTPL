@@ -35,12 +35,15 @@ class ConditionParser
       if ($tok === '!') {
         // pega próximo token e cria NOT
         $next = array_shift($tokens);
-        if (!$next) throw new \RuntimeException("NOT sem expressão");
+        if (!$next) showException("NOT sem expressão");
         if ($next === '(') {
           $expr = $this->parseCondition($tokens);
-        } /*else {
+        } elseif ($next instanceof Node) {
           $expr = $next;
-        }*/
+        } else {
+          // caso raro: token inesperado — erro
+          showException("NOT sem expressão válida perto de: " . json_encode($next));
+        }
         $node = new Node('not', [], ['expr' => $expr]);
         $root->content[] = $node;
         continue;
@@ -166,9 +169,30 @@ class ConditionParser
         $i += strlen($mm[0]);
         continue;
       }
+      if (preg_match('/^[A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*/A', $rest, $m)) {
+        $lit = $m[0];
+        $node = new Node('literal', [], ['expr' => $lit]);
+        $out[] = $node;
+        $i += strlen($lit);
+        continue;
+      }
+      if (preg_match('/^\'(?:\\\\\'|[^\'])*\'/A', $rest, $m) || preg_match('/^"(?:\\\\\"|[^"])*"/A', $rest, $m)) {
+        $lit = $m[0];
+        $node = new Node('literal', [], ['expr' => $lit]);
+        $out[] = $node;
+        $i += strlen($lit);
+        continue;
+      }
+      if (preg_match('/^\d+(?:\.\d+)?/A', $rest, $m)) {
+        $lit = $m[0];
+        $node = new Node('literal', [], ['expr' => $lit]);
+        $out[] = $node;
+        $i += strlen($lit);
+        continue;
+      }
 
       // se nada bateu: token inválido — devolve erro detalhado (útil pra dev)
-      throw new \RuntimeException("ConditionParser tokenizer: token inválido em: " . substr($condition, $i, 50));
+      showException("ConditionParser tokenizer: token inválido em: " . substr($condition, $i, 50));
     }
 
     return $out;
@@ -179,13 +203,25 @@ class ConditionParser
 
     // Segurança: caso recebamos um nó literal criado como fallback
     if ($node->type === 'literal') {
+      // se veio com 'expr' -> resolve o valor dinamicamente (variável, string, número)
+      if (array_key_exists('expr', $node->params)) {
+        $expr = $node->params['expr'];
+
+        // se expr for nulo ou vazio, considera false
+        if ($expr === null || $expr === '') {
+          return false;
+        }
+
+        $val = resolveValue($expr, $global, $local);
+        return (bool)$val;
+      }
       return (bool)($node->params['value'] ?? false);
     } else if ($node->type === 'comparison') {
       $leftRaw  = $node->params['left'] ?? '';
       $rightRaw = $node->params['right'] ?? '';
       $opRaw    = $node->params['op'] ?? '';
 
-      $leftVal = resolveValue($rightRaw, $global, $local);
+      $leftVal = resolveValue($leftRaw, $global, $local);
 
       $rightVal = resolveValue($rightRaw, $global, $local);
 
