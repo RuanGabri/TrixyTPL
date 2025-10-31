@@ -1,0 +1,62 @@
+{
+  "name": "TrixyTPL",
+  "displayName": "TrixyTPL",
+  "description": "Um complemento com Highlight e snippets para auxiliar o uso da TrixyTPL",
+  "version": "1.0.3",
+  "publisher": "TrixyTPL",
+  "engines": { "vscode": "^1.80.0" },
+  "icon": "icons/Light.png",
+  "screenshots": [
+    {
+      "path": "images/screenshot1.png",
+      "caption": "Demonstração de condicionais em Trixy"
+    },
+    {
+      "path": "images/screenshot2.png",
+      "caption": "Exemplo de Loops em tabelas"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RuanGabri/TrixyTPL"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "trixytpl",
+        "aliases": ["TrixyTPL", "trixytpl"],
+        "extensions": [".trixy",".tpl",".trx"],
+        "configuration": "./language-config.json",
+        "icon": {
+          "light": "icons/TrixyTPL_Light.svg",
+          "dark": "icons/TrixyTPL_Light.svg"
+        }
+      }
+    ],
+
+    "grammars": [
+      {
+        "language": "trixytpl",
+        "scopeName": "text.html.trixytpl",
+        "path": "./syntaxes/trixytpl.tmLanguage.json",
+        "injectTo": ["text.html.basic"]
+      }
+    ],
+
+    "snippets": [
+      { "language": "trixytpl", "path": "./snippets/trixytpl.json" }
+    ],
+
+    "extensionDependencies": [
+      "vscode.html-language-features"
+    ],
+
+    "configurationDefaults": {             
+      "emmet.includeLanguages": { "trixytpl": "html" },
+      "[trixytpl]": {
+        "editor.defaultFormatter": "vscode.html-language-features",
+        "editor.formatOnSave": true
+      }
+    }
+  }
+}

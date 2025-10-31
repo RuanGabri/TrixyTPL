@@ -1,6 +1,6 @@
-# Template Engine — Documentação (versão atual)
+# TrixyTPL — Documentação
 
-**Resumo rápido (sem enrolação):** este documento descreve a versão atual do motor de templates em PHP — parser, AST de `Node`, renderer, parser de condições, debugger e utilitários. Atualizado para refletir o código fonte fornecido (funções globais e classes: `Node`, `replaceVar`, `processFilter`, `split_args`, `resolveValue`, `NodeDebugger`, `TemplateParser`, `ConditionParser`, `TemplateRenderer`, `Template`).
+**Resumo** este documento descreve a versão atual do motor de templates em PHP, Trixy — parser, AST de `Node`, renderer, parser de condições, debugger e utilitários. Atualizado para refletir o código fonte fornecido (funções globais e classes: `Node`, `replaceVar`, `processFilter`, `split_args`, `resolveValue`, `NodeDebugger`, `TemplateParser`, `ConditionParser`, `TemplateRenderer`, `Template`).
 
 ---
 
@@ -252,6 +252,13 @@ $envdir = __DIR__ . '/.env';
 
 $t = new Template('exemplo.tpl', $secret, $cachedir, $envdir);
 $t->render(['nome' => 'Rian', 'usuario' => ['idade' => 25]]);
+```
+---
+
+## Licença
+
+```
+License: Apache 2.0
 ```
 
 ---

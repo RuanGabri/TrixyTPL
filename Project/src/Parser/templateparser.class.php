@@ -28,20 +28,14 @@ class TemplateParser
     $current = new Node('root', []); // cria o ponteiro do pai atual e cria primeiro nível, raiz
     $stack[] = $current; //salva a raiz na arvore
     $pattern = '/
-     (?P<foreach> \[\s*foreach\s* (?P<listname>[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*) \s+as\s* (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
-    | (?P<for>\[\s*for\s*(?P<times>\d+|[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*)\s*{)
+     (?P<foreach> \[\s*foreach\s+ (?P<listname>[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*) \s+as\s+ (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
+    | (?P<for>\[\s*for\s+(?P<times>\d+|[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*)\s*{)
     | (?P<if>\[\s*if\s*(?P<if_condition>.*?)\s*{)
     | (?P<elseif>\[\s*else\s*if\s*(?P<elseif_condition>.*?)\s*{)
     | (?P<else>\[\s*else\s*{)
-    | (?P<require>\[\s*require\s*\(?\s*
-        (?P<archive>
-            "(?:\\\\.|[^"\\\\])*"      # aspas duplas
-          | \'(?:\\\\.|[^\'\\\\])*\'   # aspas simples
-          | [a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*  # sem aspas
-        )
-    \s*\)?\])
-    | (?P<str_filter> \[\s*str_filter\s*\(\s*(?P<str>.*?)\s*,\s*(?P<filters>.*?)\s*\)\s*])
-    | (?P<close>}\s*\])
+    | (?P<require>\[\s*require\s+\(?\s*(?P<archive>.*?)\s*\])
+    | (?P<str_filter> \[\s*str_filter\s*\(\s*(?P<str>.*?)\s*,\s*(?P<filters>.*?)\s*\)\s*\])
+    | (?P<close>\}\s*\])
     /six';
 
     $pos = 0; //guarda a posição começando em 0.

@@ -11,3 +11,7 @@ Cache
 *.phtml
 *.txt
 *.env
+*.gitignore
+
+#ignora extenções já compactadas
+*.vsix

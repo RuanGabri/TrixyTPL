@@ -1,0 +1,61 @@
+{
+  "For Loop": {
+    "prefix": "for",
+    "body": [
+      "[for $0{",
+      "  ",
+      "}]"
+    ],
+    "description": "Cria um loop for, pode usar variáveis"
+  },
+  "Foreach Loop": {
+    "prefix": "foreach",
+    "body": [
+      "[foreach $0 as <!--item-->{",
+      "  ",
+      "}]"
+    ],
+    "description": "Cria um loop foreach, pode incluir a key"
+  },
+  "If Conditional": {
+    "prefix": "if",
+    "body": [
+      "[if ($0){",
+      "  ",
+      "}]"
+    ],
+    "description": "Cria um condicional if que imprime o conteúdo se a condição for verdadeira"
+  },
+  "Elseif Conditional": {
+    "prefix": "elseif",
+    "body": [
+      "[elseif ($0){",
+      "  ",
+      "}]"
+    ],
+    "description": "Cria um condicional if que imprime o conteúdo se a condição for verdadeira. Para ele ser executado a condicional anterior a ele deve ser falsa"
+  },
+  "Else Conditional": {
+    "prefix": "else",
+    "body": [
+      "[else {",
+      "  $0",
+      "}]"
+    ],
+    "description": "Cria um condicional if que imprime o conteúdo se a condicional anterior a ele for falsa"
+  },
+  "Require Command": {
+    "prefix": "require",
+    "body": [
+      "[require $0]"
+    ],
+    "description": "Executa o codigo de outro arquivo como Trixy"
+  },
+  "Filter Command": {
+    "prefix": "str_filter",
+    "body": [
+      "[str_filter ( $0, ${1: <!--filtro-->})"
+    ],
+    "description": "Filtra uma string com n filtros"
+  }
+}

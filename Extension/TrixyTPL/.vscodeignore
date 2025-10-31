@@ -1,0 +1,39 @@
+# Ignore editor and repo cruft
+.vscode/**
+.git/**
+.gitignore
+.gitattributes
+
+# Tests, docs, assets que não precisa embalar
+tests/**
+scripts/**
+docs/**
+
+# Node dev files (se você tiver dependências runtime, não ignore node_modules)
+node_modules/**
+package-lock.json
+
+# Source files (se você compila src -> out)
+src/**
+tsconfig.json
+.eslintrc*
+.prettierrc*
+
+# Logs, temp
+*.log
+.DS_Store
+*.tgz
+
+# VSCE metadata
+.vscodeignore
+
+# Arquivos de build locais
+out/**
+
+# Evita empacotar o vsix antigo
+*.vsix
+
+# Evita testes
+*.trixy
+*.trx
+*.tpl
