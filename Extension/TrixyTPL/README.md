@@ -28,7 +28,7 @@ Resumo: traz destaque de sintaxe (injeção no HTML), snippets úteis e integra�
 
 | Condicionais | Loops em tabelas |
 |------------|-----------|
-| ![Demonstração de condicionais em Trixy](images/screenshot1.png) | ![Exemplo de Loops em tabelas](images/screenshot2.png) |
+| ![Demonstração de condicionais em Trixy](https://raw.githubusercontent.com/RuanGabri/TrixyTPL/refs/heads/main/Extension/TrixyTPL/images/screenshot1.png) | ![Exemplo de Loops em tabelas](https://raw.githubusercontent.com/RuanGabri/TrixyTPL/refs/heads/main/Extension/TrixyTPL/images/screenshot2.png) |
 
 ---
 

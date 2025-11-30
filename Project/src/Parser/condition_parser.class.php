@@ -1,18 +1,11 @@
 <?php
 require_once __DIR__ . "/../Utils/helpers.php";
+require_once __DIR__ . "/../Core/config.php";
 
 class ConditionParser
 {
-  private $cond; //html do template original
-  public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string)
-  {
-    $this->cond = $string;
-    $tokens = $this->tokenizer($string);
-    $this->root =  $this->parseCondition($tokens);
-  }
-  private function parseCondition(array $tokens)
+  public static function parseCondition(array &$tokens)
   {
     $root = new Node("root", []);
 
@@ -20,7 +13,7 @@ class ConditionParser
       $tok = array_shift($tokens);
 
       if ($tok === '(') {
-        $root->content[] = $this->parseCondition($tokens);
+        $root->content[] = self::parseCondition($tokens);
         continue;
       }
 
@@ -37,7 +30,7 @@ class ConditionParser
         $next = array_shift($tokens);
         if (!$next) showException("NOT sem expressão");
         if ($next === '(') {
-          $expr = $this->parseCondition($tokens);
+          $expr = self::parseCondition($tokens);
         } elseif ($next instanceof Node) {
           $expr = $next;
         } else {
@@ -91,10 +84,11 @@ class ConditionParser
     if (!isset($root->content[0]) || $root->content[0] === null) {
       return new Node('literal', [], ['value' => false]);
     }
+
     return $root->content[0];
   }
 
-  private function tokenizer(string $condition)
+  public static function tokenizer(string $condition)
   {
     $condition = preg_replace('/^\x{FEFF}+/u', '', $condition); // remove BOM UTF-8
     $condition = str_replace("\xC2\xA0", ' ', $condition); // NBSP -> space
@@ -106,14 +100,14 @@ class ConditionParser
     // regex para comparações (sem o ^ porque vamos aplicá-lo na substr)
     $cmpRegex = '/^
             (
-                [A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*   # variável
+                ' . Config::VAR_PATTERN . '   # variável
                 | \'(?:\\\\\'|[^\'])*\'             # string simples
                 | "(?:\\\\\"|[^"])*"                # string dupla
                 | \d+(?:\.\d+)?                     # número
             )
-            \s*(==|=|!=|===|!==|>=|<=|>|<|\(|\))\s*
+            \s*(==|!=|===|!==|>=|<=|>|<|\(|\))\s*
             (
-                [A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*
+                ' . Config::VAR_PATTERN . '
                 | \'(?:\\\\\'|[^\'])*\'
                 | "(?:\\\\\"|[^"])*"
                 | \d+(?:\.\d+)?
@@ -169,7 +163,7 @@ class ConditionParser
         $i += strlen($mm[0]);
         continue;
       }
-      if (preg_match('/^[A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*/A', $rest, $m)) {
+      if (preg_match('/^' . Config::VAR_PATTERN . '/A', $rest, $m)) {
         $lit = $m[0];
         $node = new Node('literal', [], ['expr' => $lit]);
         $out[] = $node;
@@ -227,7 +221,7 @@ class ConditionParser
 
       $op = trim((string)$opRaw);
 
-      if ($op === '==' || $op === '=') return $leftVal == $rightVal;
+      if ($op === '==') return $leftVal == $rightVal;
       elseif ($op === '===') return $leftVal === $rightVal;
       elseif ($op === '!=') return $leftVal != $rightVal;
       elseif ($op === '!==') return $leftVal !== $rightVal;

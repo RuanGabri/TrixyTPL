@@ -9,13 +9,15 @@ class TemplateParser
 {
 
   private $html; //html do template original
-  private $global; //html do template original
+  private $global; //dados globais do template
+  private $local; //dados globais do template
   public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string, array|object $global)
+  public function __construct(string $string, array|object $global, array|object $local = [])
   {
     $this->html = $string;
     $this->global = $global;
+    $this->local = $local;
     $this->root =  $this->parse($string); //Salva o html como arvore na variavel;
   }
 
@@ -27,16 +29,33 @@ class TemplateParser
     $stack = []; //cria a arvore vazia
     $current = new Node('root', []); // cria o ponteiro do pai atual e cria primeiro nível, raiz
     $stack[] = $current; //salva a raiz na arvore
-    $pattern = '/
-     (?P<foreach> \[\s*foreach\s+ (?P<listname>[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*) \s+as\s+ (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
-    | (?P<for>\[\s*for\s+(?P<times>\d+|[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*)\s*{)
+    $bracepattern = '
+    (?P<brace>
+      \{
+        \s*
+        (?:
+              Define\s*\((?<assignment>.*?)\)
+            | (?P<varStr>' . Config::VAR_PATTERN . ')
+            | Math\s*\((?<expression>.*?)\)
+            | require\s+\((?P<archive>.*?)\)
+            | str_filter\s*\((?P<str>.*?),\s*(?P<filters>.*?)\)
+            | (?<randNum>random_num\s*(?:\((?P<maxRN>.*?)(?:,(?P<minRN>.*?))?\))?)
+            | (?<randStr>random_str\s*(?:\((?P<lenRS>.*?)\))?)
+            
+
+        )(?:\s*\|\s*(?P<varFilter>.*?))?
+        \s*
+      \}
+    )';
+    $pattern = '~
+     (?P<foreach> \[\s*foreach\s+(?P<listname>' . Config::VAR_PATTERN . ') \s+as\s+ (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
+    | (?P<for>\[\s*for\s+(?P<times>\d+|' . Config::VAR_PATTERN . ')\s*{)
     | (?P<if>\[\s*if\s*(?P<if_condition>.*?)\s*{)
     | (?P<elseif>\[\s*else\s*if\s*(?P<elseif_condition>.*?)\s*{)
     | (?P<else>\[\s*else\s*{)
-    | (?P<require>\[\s*require\s+\(?\s*(?P<archive>.*?)\s*\])
-    | (?P<str_filter> \[\s*str_filter\s*\(\s*(?P<str>.*?)\s*,\s*(?P<filters>.*?)\s*\)\s*\])
+    | ' . $bracepattern . '
     | (?P<close>\}\s*\])
-    /six';
+    ~six';
 
     $pos = 0; //guarda a posição começando em 0.
     preg_match_all($pattern, $html, $matches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
@@ -109,8 +128,10 @@ class TemplateParser
 
         // parse da condição e guarda no próprio Node
         if ($node->params['condition'] !== '') {
-          $parser = new ConditionParser($node->params['condition']);
-          $node->params['condNode'] = $parser->root; // AST pronta
+          $tokens = ConditionParser::tokenizer($node->params['condition']);
+          $root = ConditionParser::parseCondition($tokens);
+
+          $node->params['condNode'] = $root; // AST pronta
         }
 
         $stack[count($stack) - 1]->content[] = $node;
@@ -125,8 +146,9 @@ class TemplateParser
 
             // parse da condição e guarda no próprio Node
             if ($node->params['condition'] !== '') {
-              $parser = new ConditionParser($node->params['condition']);
-              $node->params['condNode'] = $parser->root; // AST pronta
+              $tokens = ConditionParser::tokenizer($node->params['condition']);
+              $root = ConditionParser::parseCondition($tokens);
+              $node->params['condNode'] = $root; // AST pronta
             }
 
             $prevIf->dependents[] = $node;
@@ -149,30 +171,66 @@ class TemplateParser
             $stack[] = $node;
           }
         }
-      } // processa o require e adiciona os dados da pagina requerida na arvore
-      elseif (isset($m['require'][0]) && $m['require'][0] !== '') {
-        $node = new Node('require', []);
+      } elseif (isset($m['brace'][0]) && $m['brace'][0] !== '') {
+        // Variáveis 
+        if (isset($m['varStr'][0]) && $m['varStr'][0] !== '') {
+          $node = new Node('var', []);
+          $node->params["varStr"] = (string)$m['varStr'][0] ?? '';
+          $node->params["varFilter"] = isset($m['varFilter'][0]) ? (string)$m['varFilter'][0] : "";
 
-        $this->requireParser($node, $m['archive'][0]);
+          $stack[count($stack) - 1]->content[] = $node;
+        }
+        // Expressões matemáticas 
+        elseif (isset($m['expression'][0]) && $m['expression'][0] !== '') {
+          $node = new Node('math', []);
+          $node->params["expression"] = (string)$m['expression'][0] ?? "";
+          $node->params["Filter"] = isset($m['varFilter'][0]) ? (string)$m['varFilter'][0] : "";
 
-        $stack[count($stack) - 1]->content[] = $node;
-      } // lê o str_filter adiciona seus dados à arvore
-      elseif (isset($m['str_filter'][0]) && $m['str_filter'][0] !== '') {
-        $node = new Node('str_filter', []);
+          $stack[count($stack) - 1]->content[] = $node;
+        }
+        // Definir variáveis 
+        elseif (isset($m['assignment'][0]) && $m['assignment'][0] !== '') {
+          $node = new Node('define', []);
+          $node->params["assignment"] = (string)$m['assignment'][0] ?? "";
 
-        $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
+          $stack[count($stack) - 1]->content[] = $node;
+        } // processa o require e adiciona os dados da pagina requerida na arvore
+        elseif (isset($m['archive'][0]) && $m['archive'][0] !== '') {
 
-        $node->params["str"] = $str;
+          $filerequired = $m['archive'][0];
+          $node = new Node('require', []);
 
-        $filters = isset($m['filters'][0]) ? (string)$m['filters'][0] : [];
+          $this->requireParser($node, $filerequired);
+          $stack[count($stack) - 1]->content[] = $node;
+        } // lê o str_filter adiciona seus dados à arvore
+        elseif (isset($m['filters'][0]) && $m['filters'][0] !== '') {
+          $node = new Node('str_filter', []);
 
-        $filters = trim_once($filters, "(", ")");
-        $filters = split_args(",", $filters);
+          $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
+
+          $node->params["str"] = $str;
+
+          $filters = (string)$m['filters'][0];
+
+          $filters = trim_once($filters, "(", ")");
+          $filters = split_args(",", $filters);
 
 
-        $node->params["filters"] = $filters;
+          $node->params["filters"] = $filters;
 
-        $stack[count($stack) - 1]->content[] = $node;
+          $stack[count($stack) - 1]->content[] = $node;
+        } elseif (isset($m['randNum'][0]) && $m['randNum'][0] !== '') {
+          $node = new Node('randNum', []);
+          $node->params["min"] = isset($m['minRN'][0]) ? (float)$m['minRN'][0] : 1;
+          $node->params["max"] = isset($m['maxRN'][0]) ? (float)$m['maxRN'][0] : 100;
+
+          $stack[count($stack) - 1]->content[] = $node;
+        } elseif (isset($m['randStr'][0]) && $m['randStr'][0] !== '') {
+          $node = new Node('randStr', []);
+          $node->params["len"] = isset($m['lenRS'][0]) ? (int)$m['lenRS'][0] : 10;
+
+          $stack[count($stack) - 1]->content[] = $node;
+        }
       }
 
       // --- Fechamento ---
@@ -194,18 +252,17 @@ class TemplateParser
       //Todo texto depois de todos os comandos é adicionado também
       $stack[count($stack) - 1]->content[] = new Node('text', substr($html, $pos));
     }
-
     return $current;
   }
 
 
   //processa a subarvore do arquivo requerido
-  private function requireParser(Node $node, String $Filename, array $local = []): void
+  private function requireParser(Node $node, String $Filename): void
   {
     $content = '';
 
     $name = $Filename ? (string)$Filename : '';
-    $name = resolveValue($name, $this->global, $local);
+    $name = resolveValue($name, $this->global, $this->local);
 
     $node->params['archive'] = $name;
 

@@ -2,17 +2,17 @@
   "name": "TrixyTPL",
   "displayName": "TrixyTPL",
   "description": "Um complemento com Highlight e snippets para auxiliar o uso da TrixyTPL",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "TrixyTPL",
   "engines": { "vscode": "^1.80.0" },
   "icon": "icons/Light.png",
   "screenshots": [
     {
-      "path": "images/screenshot1.png",
+      "path": "https://raw.githubusercontent.com/RuanGabri/TrixyTPL/refs/heads/main/Extension/TrixyTPL/images/screenshot1.png",
       "caption": "Demonstração de condicionais em Trixy"
     },
     {
-      "path": "images/screenshot2.png",
+      "path": "https://raw.githubusercontent.com/RuanGabri/TrixyTPL/refs/heads/main/Extension/TrixyTPL/images/screenshot2.png",
       "caption": "Exemplo de Loops em tabelas"
     }
   ],

@@ -14,6 +14,7 @@
   }
 }
 
+
 /**
  * NodeDebugger
  * Impressão organizada de uma árvore de Node.
@@ -158,57 +159,51 @@ class NodeDebugger
   }
 }
 
+
 if (!function_exists("replaceVar")) {
-  function replaceVar($block, $global, $local = [])
+  function replaceVar($var, $global, $local = [], $filter = '')
   {
+    $var = ltrim($var, "$");
 
-    return preg_replace_callback(
-      '/\{\s*
-      (?P<var>[a-zA-Z_]\w*  (?:\.[a-zA-Z_0-9]\w*)*)
-        (?:\s*\|\s*
-            (?P<filter>.*?) # {var| f1}
-        )?
-      \s*\}/xs',
-      function ($m) use ($global, $local) {
-        $var = $m["var"];
-        $filter = $m["filter"] ?? null;
-        $data = $global ?? '';
-        $return = '';
+    $data = $global ?? [];
+    $return = '';
 
-        $path = explode(".", $var);
-        $first = array_shift($path);
+    $path = explode(".", $var);
+    $first = array_shift($path);
 
-        if (is_array($local)) $data = (array_key_exists($first, $local)) ?
-          $local[$first] : ($global[$first] ?? '');
+    if (is_array($local)) {
+      $data = (array_key_exists($first, $local)) ?
+        $local[$first] : ($global[$first] ?? '');
+    }
+    $index = $data;
 
-        $index = $data;
-        foreach ($path as $i) {
-          if (is_array($index) && array_key_exists($i, $index)) {
+    foreach ($path as $i) {
 
-            $index = $index[$i];
-          } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
+      if (is_array($index) && array_key_exists($i, $index)) {
 
-            $index = $index[$i];
-          } else if (
-            is_object($index) &&
-            (property_exists($index, $i) || isset($index->$i))
-          ) {
+        $index = $index[$i];
+      } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
 
-            $index = $index->$i;
-          } else {
+        $index = $index[$i];
+      } else if (
+        is_object($index) &&
+        (property_exists($index, $i) || isset($index->$i))
+      ) {
 
-            $index = null;
-            break;
-          }
-        }
-        $return = (isset($index)) ? $index : '';
+        $index = $index->$i;
+      } else {
 
-        $return = processFilter($return, $filter, $global, $local);
+        $index = null;
+        break;
+      }
+    }
+    $return = (isset($index)) ? $index : '';
 
-        return $return;
-      },
-      $block
-    );
+
+    if (isset($filter) && $filter !== '') $return = processFilter("'{$return}'", $filter, $global, $local);
+
+
+    return $return;
   }
 }
 if (!function_exists("processFilter")) {
@@ -218,6 +213,7 @@ if (!function_exists("processFilter")) {
     array | object $global,
     array | object $local = []
   ): string {
+    $str = resolveValue($str, $global, $local);
     // se houver processa os filtros
     if (isset($filter) && !empty($filter)) {
       // se houver processa os filtros complexos
@@ -228,7 +224,6 @@ if (!function_exists("processFilter")) {
         foreach ($params as $key => $value) {
           $params[$key] = resolveValue($value, $global, $local);
         }
-        $str = resolveValue($str, $global, $local);
 
         switch ($command) {
           case 'date':
@@ -441,9 +436,18 @@ if (!function_exists("resolveValue")) {
       else if (in_array(strtolower($str), ["true", "false", "null"])) {
         $map = ['true' => true, 'false' => false, 'null' => null];
         $str = $map[strtolower($str)];
-      } else {
+      } else if (preg_match('/[\+\-\*\/\(\)]/', $str)) {
+        try {
+          $tokens = MathParser::tokenizer($str);
+          $mathNode = MathParser::parseMath($tokens);
+          $str = MathParser::evaluateNode($mathNode, $global, $local);
+        } catch (\Exception $e) {
+          // fallback: retorna string original se não for possível avaliar
+          $str = "";
+        }
+      } else if (preg_match('/' . Config::VAR_PATTERN . '/', $str)) {
         // trata como variável
-        $str = replaceVar('{' . $str . '}', $global, $local);
+        $str = replaceVar($str, $global, $local);
       }
     }
     return $str;
@@ -507,6 +511,27 @@ if (!function_exists("resolvePath")) {
 }
 
 
+if (!function_exists("createToken")) {
+  function createToken(int $len = 16)
+  {
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
+    $token = [];
+
+    for ($i = 0; $i < $len; $i++) {
+      $token[] = $chars[random_int(0, strlen($chars) - 1)];
+    }
+
+    return implode("", $token);
+  }
+}
+
+class Config
+{
+  public const VAR_PATTERN = '\$[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*';
+}
+
+
+
 
 
 
@@ -516,13 +541,15 @@ class TemplateParser
 {
 
   private $html; //html do template original
-  private $global; //html do template original
+  private $global; //dados globais do template
+  private $local; //dados globais do template
   public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string, array|object $global)
+  public function __construct(string $string, array|object $global, array|object $local = [])
   {
     $this->html = $string;
     $this->global = $global;
+    $this->local = $local;
     $this->root =  $this->parse($string); //Salva o html como arvore na variavel;
   }
 
@@ -534,22 +561,33 @@ class TemplateParser
     $stack = []; //cria a arvore vazia
     $current = new Node('root', []); // cria o ponteiro do pai atual e cria primeiro nível, raiz
     $stack[] = $current; //salva a raiz na arvore
-    $pattern = '/
-     (?P<foreach> \[\s*foreach\s* (?P<listname>[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*) \s+as\s* (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
-    | (?P<for>\[\s*for\s*(?P<times>\d+|[a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*)\s*{)
+    $bracepattern = '
+    (?P<brace>
+      \{
+        \s*
+        (?:
+              Define\s*\((?<assignment>.*?)\)
+            | (?P<varStr>' . Config::VAR_PATTERN . ')
+            | Math\s*\((?<expression>.*?)\)
+            | require\s+\((?P<archive>.*?)\)
+            | str_filter\s*\((?P<str>.*?),\s*(?P<filters>.*?)\)
+            | (?<randNum>random_num\s*(?:\((?P<maxRN>.*?)(?:,(?P<minRN>.*?))?\))?)
+            | (?<randStr>random_str\s*(?:\((?P<lenRS>.*?)\))?)
+            
+
+        )(?:\s*\|\s*(?P<varFilter>.*?))?
+        \s*
+      \}
+    )';
+    $pattern = '~
+     (?P<foreach> \[\s*foreach\s+(?P<listname>' . Config::VAR_PATTERN . ') \s+as\s+ (?:(?P<key>\w+)\s*=>\s*)? (?P<item>\w+) \s*{)
+    | (?P<for>\[\s*for\s+(?P<times>\d+|' . Config::VAR_PATTERN . ')\s*{)
     | (?P<if>\[\s*if\s*(?P<if_condition>.*?)\s*{)
     | (?P<elseif>\[\s*else\s*if\s*(?P<elseif_condition>.*?)\s*{)
     | (?P<else>\[\s*else\s*{)
-    | (?P<require>\[\s*require\s*\(?\s*
-        (?P<archive>
-            "(?:\\\\.|[^"\\\\])*"      # aspas duplas
-          | \'(?:\\\\.|[^\'\\\\])*\'   # aspas simples
-          | [a-zA-Z_]\w*(?:\.[a-zA-Z_0-9]\w*)*  # sem aspas
-        )
-    \s*\)?\])
-    | (?P<str_filter> \[\s*str_filter\s*\(\s*(?P<str>.*?)\s*,\s*(?P<filters>.*?)\s*\)\s*])
-    | (?P<close>}\s*\])
-    /six';
+    | ' . $bracepattern . '
+    | (?P<close>\}\s*\])
+    ~six';
 
     $pos = 0; //guarda a posição começando em 0.
     preg_match_all($pattern, $html, $matches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
@@ -622,8 +660,10 @@ class TemplateParser
 
         // parse da condição e guarda no próprio Node
         if ($node->params['condition'] !== '') {
-          $parser = new ConditionParser($node->params['condition']);
-          $node->params['condNode'] = $parser->root; // AST pronta
+          $tokens = ConditionParser::tokenizer($node->params['condition']);
+          $root = ConditionParser::parseCondition($tokens);
+
+          $node->params['condNode'] = $root; // AST pronta
         }
 
         $stack[count($stack) - 1]->content[] = $node;
@@ -638,8 +678,9 @@ class TemplateParser
 
             // parse da condição e guarda no próprio Node
             if ($node->params['condition'] !== '') {
-              $parser = new ConditionParser($node->params['condition']);
-              $node->params['condNode'] = $parser->root; // AST pronta
+              $tokens = ConditionParser::tokenizer($node->params['condition']);
+              $root = ConditionParser::parseCondition($tokens);
+              $node->params['condNode'] = $root; // AST pronta
             }
 
             $prevIf->dependents[] = $node;
@@ -662,30 +703,66 @@ class TemplateParser
             $stack[] = $node;
           }
         }
-      } // processa o require e adiciona os dados da pagina requerida na arvore
-      elseif (isset($m['require'][0]) && $m['require'][0] !== '') {
-        $node = new Node('require', []);
+      } elseif (isset($m['brace'][0]) && $m['brace'][0] !== '') {
+        // Variáveis 
+        if (isset($m['varStr'][0]) && $m['varStr'][0] !== '') {
+          $node = new Node('var', []);
+          $node->params["varStr"] = (string)$m['varStr'][0] ?? '';
+          $node->params["varFilter"] = isset($m['varFilter'][0]) ? (string)$m['varFilter'][0] : "";
 
-        $this->requireParser($node, $m['archive'][0]);
+          $stack[count($stack) - 1]->content[] = $node;
+        }
+        // Expressões matemáticas 
+        elseif (isset($m['expression'][0]) && $m['expression'][0] !== '') {
+          $node = new Node('math', []);
+          $node->params["expression"] = (string)$m['expression'][0] ?? "";
+          $node->params["Filter"] = isset($m['varFilter'][0]) ? (string)$m['varFilter'][0] : "";
 
-        $stack[count($stack) - 1]->content[] = $node;
-      } // lê o str_filter adiciona seus dados à arvore
-      elseif (isset($m['str_filter'][0]) && $m['str_filter'][0] !== '') {
-        $node = new Node('str_filter', []);
+          $stack[count($stack) - 1]->content[] = $node;
+        }
+        // Definir variáveis 
+        elseif (isset($m['assignment'][0]) && $m['assignment'][0] !== '') {
+          $node = new Node('define', []);
+          $node->params["assignment"] = (string)$m['assignment'][0] ?? "";
 
-        $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
+          $stack[count($stack) - 1]->content[] = $node;
+        } // processa o require e adiciona os dados da pagina requerida na arvore
+        elseif (isset($m['archive'][0]) && $m['archive'][0] !== '') {
 
-        $node->params["str"] = $str;
+          $filerequired = $m['archive'][0];
+          $node = new Node('require', []);
 
-        $filters = isset($m['filters'][0]) ? (string)$m['filters'][0] : [];
+          $this->requireParser($node, $filerequired);
+          $stack[count($stack) - 1]->content[] = $node;
+        } // lê o str_filter adiciona seus dados à arvore
+        elseif (isset($m['filters'][0]) && $m['filters'][0] !== '') {
+          $node = new Node('str_filter', []);
 
-        $filters = trim_once($filters, "(", ")");
-        $filters = split_args(",", $filters);
+          $str = isset($m['str'][0]) ? (string)$m['str'][0] : '';
+
+          $node->params["str"] = $str;
+
+          $filters = (string)$m['filters'][0];
+
+          $filters = trim_once($filters, "(", ")");
+          $filters = split_args(",", $filters);
 
 
-        $node->params["filters"] = $filters;
+          $node->params["filters"] = $filters;
 
-        $stack[count($stack) - 1]->content[] = $node;
+          $stack[count($stack) - 1]->content[] = $node;
+        } elseif (isset($m['randNum'][0]) && $m['randNum'][0] !== '') {
+          $node = new Node('randNum', []);
+          $node->params["min"] = isset($m['minRN'][0]) ? (float)$m['minRN'][0] : 1;
+          $node->params["max"] = isset($m['maxRN'][0]) ? (float)$m['maxRN'][0] : 100;
+
+          $stack[count($stack) - 1]->content[] = $node;
+        } elseif (isset($m['randStr'][0]) && $m['randStr'][0] !== '') {
+          $node = new Node('randStr', []);
+          $node->params["len"] = isset($m['lenRS'][0]) ? (int)$m['lenRS'][0] : 10;
+
+          $stack[count($stack) - 1]->content[] = $node;
+        }
       }
 
       // --- Fechamento ---
@@ -707,18 +784,17 @@ class TemplateParser
       //Todo texto depois de todos os comandos é adicionado também
       $stack[count($stack) - 1]->content[] = new Node('text', substr($html, $pos));
     }
-
     return $current;
   }
 
 
   //processa a subarvore do arquivo requerido
-  private function requireParser(Node $node, String $Filename, array $local = []): void
+  private function requireParser(Node $node, String $Filename): void
   {
     $content = '';
 
     $name = $Filename ? (string)$Filename : '';
-    $name = resolveValue($name, $this->global, $local);
+    $name = resolveValue($name, $this->global, $this->local);
 
     $node->params['archive'] = $name;
 
@@ -734,18 +810,11 @@ class TemplateParser
 
 
 
+
 class ConditionParser
 {
-  private $cond; //html do template original
-  public $root; //Arvore de hierarquia de comandos e condições
 
-  public function __construct(string $string)
-  {
-    $this->cond = $string;
-    $tokens = $this->tokenizer($string);
-    $this->root =  $this->parseCondition($tokens);
-  }
-  private function parseCondition(array $tokens)
+  public static function parseCondition(array &$tokens)
   {
     $root = new Node("root", []);
 
@@ -753,7 +822,7 @@ class ConditionParser
       $tok = array_shift($tokens);
 
       if ($tok === '(') {
-        $root->content[] = $this->parseCondition($tokens);
+        $root->content[] = self::parseCondition($tokens);
         continue;
       }
 
@@ -770,7 +839,7 @@ class ConditionParser
         $next = array_shift($tokens);
         if (!$next) showException("NOT sem expressão");
         if ($next === '(') {
-          $expr = $this->parseCondition($tokens);
+          $expr = self::parseCondition($tokens);
         } elseif ($next instanceof Node) {
           $expr = $next;
         } else {
@@ -824,10 +893,11 @@ class ConditionParser
     if (!isset($root->content[0]) || $root->content[0] === null) {
       return new Node('literal', [], ['value' => false]);
     }
+
     return $root->content[0];
   }
 
-  private function tokenizer(string $condition)
+  public static function tokenizer(string $condition)
   {
     $condition = preg_replace('/^\x{FEFF}+/u', '', $condition); // remove BOM UTF-8
     $condition = str_replace("\xC2\xA0", ' ', $condition); // NBSP -> space
@@ -839,14 +909,14 @@ class ConditionParser
     // regex para comparações (sem o ^ porque vamos aplicá-lo na substr)
     $cmpRegex = '/^
             (
-                [A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*   # variável
+                ' . Config::VAR_PATTERN . '   # variável
                 | \'(?:\\\\\'|[^\'])*\'             # string simples
                 | "(?:\\\\\"|[^"])*"                # string dupla
                 | \d+(?:\.\d+)?                     # número
             )
-            \s*(==|=|!=|===|!==|>=|<=|>|<|\(|\))\s*
+            \s*(==|!=|===|!==|>=|<=|>|<|\(|\))\s*
             (
-                [A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*
+                ' . Config::VAR_PATTERN . '
                 | \'(?:\\\\\'|[^\'])*\'
                 | "(?:\\\\\"|[^"])*"
                 | \d+(?:\.\d+)?
@@ -902,7 +972,7 @@ class ConditionParser
         $i += strlen($mm[0]);
         continue;
       }
-      if (preg_match('/^[A-Za-z_]\w*(?:\.[A-Za-z_0-9]\w*)*/A', $rest, $m)) {
+      if (preg_match('/^' . Config::VAR_PATTERN . '/A', $rest, $m)) {
         $lit = $m[0];
         $node = new Node('literal', [], ['expr' => $lit]);
         $out[] = $node;
@@ -960,7 +1030,7 @@ class ConditionParser
 
       $op = trim((string)$opRaw);
 
-      if ($op === '==' || $op === '=') return $leftVal == $rightVal;
+      if ($op === '==') return $leftVal == $rightVal;
       elseif ($op === '===') return $leftVal === $rightVal;
       elseif ($op === '!=') return $leftVal != $rightVal;
       elseif ($op === '!==') return $leftVal !== $rightVal;
@@ -984,12 +1054,414 @@ class ConditionParser
 
 
 
+class MathParser
+{
+
+  public static  function parseMath(array &$tokens)
+  {
+    // 1. LÓGICA DE PRÉ-PROCESSAMENTO DE TOKENS (Multiplicação Implícita e Negação Unária)
+    // Isso garante que o array $tokens seja sintaticamente correto antes de ser consumido pelo loop.
+    $new_tokens = [];
+    // O que consideramos um operando no parser (que pode ser seguido por um '(' para justaposição)
+    $operand_ends = ['number', 'string', ')'];
+    $ops = ["+", "=", "-", "*", "/"];
+
+    // Esta variável rastreia se o token ANTERIOR foi um operando (para detectar 3(...) )
+    $previous_token_is_operand = false;
+
+    foreach ($tokens as $tok) {
+
+      // --- INJEÇÃO DA MULTIPLICAÇÃO IMPLÍCITA (3(...) ou var(...)) ---
+      // Se o token atual é '(' E o token anterior era um operando, injetamos um '*'
+      if ($tok === '(' && $previous_token_is_operand) {
+        $new_tokens[] = '*';
+      }
+
+      $new_tokens[] = $tok; // Adiciona o token atual
+
+      // --- ATUALIZAÇÃO DO CONTEXTO DE OPERANDO ---
+      // Um token é um operando se for número, string ou parêntese de fechamento.
+      if (
+        is_numeric($tok) ||
+        (is_string($tok) && !in_array($tok, $ops) && $tok !== '(' && $tok !== ')') ||
+        $tok === ')'
+      ) {
+        $previous_token_is_operand = true;
+      } else {
+        $previous_token_is_operand = false;
+      }
+    }
+
+    $tokens = $new_tokens; // Substitui o array de tokens original pelo processado.
+
+
+    // 2. CORREÇÃO DA NEGAÇÃO UNÁRIA (-5, -(...))
+    // Se a expressão começar com um sinal de subtração/adição, ou tiver um após '(', 
+    // injetamos '0' para transformá-lo em subtração/adição binária (0 - X).
+    $i = 0;
+    while ($i < count($tokens)) {
+      $tok = $tokens[$i];
+
+      // Condição para Negeção Unária:
+      // 1. É o primeiro token (ex: -5)
+      // 2. É um '-' ou '+' após um '(' (ex: (-x) )
+      if (in_array($tok, ['-', '+'])) {
+        $is_unary_start = $i === 0;
+        $is_unary_after_paren = ($i > 0 && $tokens[$i - 1] === '(');
+
+        if ($is_unary_start || $is_unary_after_paren) {
+          // Injeta '0' na frente. Se for o primeiro, $i=0. Se for depois de '(', $i é a posição do operador.
+          array_splice($tokens, $i, 0, '0');
+          $i++; // Avança o índice para o '0' que acabou de ser inserido
+        }
+      }
+      $i++;
+    }
+
+    // FIM DO PRÉ-PROCESSAMENTO
+    $root = new Node("root", []);
+
+    $ops = ["+", "=", "-", "*", "/"];
+
+    while (count($tokens) > 0) {
+      $tok = array_shift($tokens);
+
+      if ($tok === '(') {
+        $root->content[] = self::parseMath($tokens);
+        continue;
+      }
+
+      if ($tok === ')') {
+        break;
+      }
+
+      if (in_array($tok, $ops)) {
+        $node = new Node("operator", [], ["value" => (string)$tok]);
+        $root->content[] = $node;
+      } elseif (is_numeric($tok)) {
+        $node = new Node("number", [], ["value" => (float)$tok]);
+        $root->content[] = $node;
+      } elseif (is_string($tok)) {
+        $node = new Node("string", [], ["value" => (string)$tok]);
+        $root->content[] = $node;
+      }
+
+      if ($tok instanceof Node) {
+        $root->content[] = $tok;
+        continue;
+      }
+    }
+
+
+
+    if (!empty($root->content)) {
+      // 2.1. Primeira Passagem (Multiplicação/Divisão)
+      $highContent = self::highParser($root->content);
+
+      // 2.2. Segunda Passagem (Adição/Subtração)
+      $lowContent = self::lowParser($highContent);
+
+      $root->content = $lowContent;
+    }
+
+    // Se não houver nenhum conteúdo válido, devolve um nó literal (false)
+    if (empty($root->content)) {
+      // Node tipo 'literal' com params['value'] = false
+      return new Node('literal', [], ['value' => false]);
+    }
+
+    // Se o primeiro elemento não existir por qualquer motivo, devolve false seguro
+    if (!isset($root->content[0]) || $root->content[0] === null) {
+      return new Node('literal', [], ['value' => false]);
+    }
+
+    return $root->content[0];
+  }
+
+  public static  function tokenizer(string $expr)
+  {
+    $expr = preg_replace('/^\x{FEFF}+/u', '', $expr); // remove BOM UTF-8
+    $expr = str_replace("\xC2\xA0", ' ', $expr); // NBSP -> space
+
+
+    $len = strlen($expr);
+    $i = 0;
+    $out = [];
+    $last_token_was_operand = false;
+
+    // regex para comparações (sem o ^ porque vamos aplicá-lo na substr)
+    $cmpRegex = '/^
+           (?P<Element>
+                ' . Config::VAR_PATTERN . '   # variável
+                | \'(?:\\\\\'|[^\'])*\'             # string simples
+                | "(?:\\\\\"|[^"])*"                # string dupla
+                | \d+(?:\.\d+)?                     # número
+            )
+            |(?P<Operator>\-|\/|\+|\*|\(|\))
+        /x';
+
+
+    while ($i < $len) {
+      // pula espaços
+      if (preg_match('/^\s+/A', substr($expr, $i), $m)) {
+        $i += strlen($m[0]);
+        continue;
+      }
+
+      $rest = substr($expr, $i);
+
+      // --- LÓGICA DE TRATAMENTO DE SINAL NEGATIVO UNÁRIO ---
+      // Se o próximo caractere for '-' ou '+', e o último token NÃO foi um operando (número, string, parêntese de fechamento),
+      // ele é um sinal unário.
+      if (in_array($rest[0], ['-', '+']) && !$last_token_was_operand) {
+
+        // Tenta casar o número unário (com o sinal)
+        if (preg_match('/^[\+\-]\s*(\d+(?:\.\d+)?)/A', $rest, $m)) {
+          $sign = $m[0][0]; // Captura o sinal
+          $number = $m[1];   // Captura o número
+
+          // Trata o número unário como um único token de elemento
+          $element = trim($sign . $number);
+          $out[] = $element;
+
+          // ATUALIZA CONTEXTO: O último token foi um operando (o número)
+          $last_token_was_operand = true;
+          $i += strlen($m[0]);
+          continue;
+        }
+      }
+
+      // parênteses
+      if ($rest[0] === '(') {
+        $out[] = '(';
+        $i++;
+        $last_token_was_operand = false;
+        continue;
+      }
+      if ($rest[0] === ')') {
+        $out[] = ')';
+        $i++;
+        $last_token_was_operand = false;
+        continue;
+      }
+
+      // monta expressão
+      if (preg_match($cmpRegex, $rest, $mm)) {
+
+        if (isset($mm['Element']) && $mm['Element'] !== '') {
+          $element = trim($mm['Element']);
+          $out[] = $element;
+          $last_token_was_operand = true;
+        } else if (isset($mm['Operator']) && $mm['Operator'] !== '') {
+          $operator = trim($mm['Operator']);
+          $out[] = $operator;
+          $last_token_was_operand = false;
+        }
+        $i += strlen($mm[0]);
+        continue;
+      }
+
+      // se nada bateu: token inválido — devolve erro detalhado (útil pra dev)
+      showException("ConditionParser tokenizer: token inválido em: " . substr($expr, $i, 50));
+      return;
+    }
+
+    return $out;
+  }
+  private static function highParser(array|object $content)
+  {
+    $newContent = [];
+    $i = 0;
+
+    while ($i < count($content)) {
+      $tok = $content[$i];
+
+      if ($tok instanceof Node && $tok->type === 'operator' && in_array($tok->params['value'], ['*', '/'])) {
+
+        $left = array_pop($newContent);
+
+        // CORRIGIDO: Pega o próximo elemento ($i+1) e avança $i após a atribuição.
+        $i++;
+        $right = $content[$i] ?? new Node('literal', [], ['value' => 0]);
+
+        $opNode = new Node("Math");
+        $opNode->params['left'] = $left;
+        $opNode->params['op'] = $tok->params['value'];
+        $opNode->params['right'] = $right;
+
+        $newContent[] = $opNode;
+      } else {
+        $newContent[] = $tok;
+      }
+      $i++;
+    }
+    return $newContent;
+  }
+
+  private static function lowParser(array|object $content)
+  {
+    $newContent = [];
+    $i = 0;
+
+    while ($i < count($content)) {
+      $tok = $content[$i];
+      if ($tok instanceof Node && $tok->type === 'operator' && in_array($tok->params['value'], ['+', '-'])) {
+
+        $left = array_pop($newContent);
+
+        // CORRIGIDO: Pega o próximo elemento ($i+1) e avança $i após a atribuição.
+        $i++;
+        $right = $content[$i] ?? new Node('literal', [], ['value' => 0]);
+
+        $opNode = new Node("Math");
+        $opNode->params['left'] = $left;
+        $opNode->params['op'] = $tok->params['value'];
+        $opNode->params['right'] = $right;
+
+        $newContent[] = $opNode;
+      } else {
+        $newContent[] = $tok;
+      }
+      $i++;
+    }
+    return $newContent;
+  }
+
+
+  // CORREÇÃO DA AVALIAÇÃO RECURSIVA
+  public static function evaluateNode(
+    Node $node,
+    array|object $global,
+    array|object $local = []
+  ) {
+
+    // 1. CASO BASE: LITERAISE e VARIÁVEIS
+    if (in_array($node->type, ['number', 'string'])) {
+      $value = $node->params['value'] ?? null;
+      if (is_string($value)) {
+        // Se for uma string (pode ser nome de variável), resolve.
+        return resolveValue($value, $global, $local);
+      }
+      // Se for número, retorna o valor.
+      return $value;
+    }
+
+
+    // 2. CASO RECURSIVO: OPERAÇÕES MATEMÁTICAS
+    if ($node->type == 'Math') {
+      $leftRaw = $node->params['left'] ?? null;
+      $rightRaw = $node->params['right'] ?? null;
+      $op = $node->params['op'] ?? '';
+
+      // Avaliação do Operando Esquerdo
+      if ($leftRaw instanceof Node) {
+        $leftVal = self::evaluateNode($leftRaw, $global, $local);
+      } else {
+        // Caso raro onde o nó não é um objeto (trata como valor/variável)
+        $leftVal = resolveValue($leftRaw, $global, $local);
+      }
+
+      // Avaliação do Operando Direito
+      if ($rightRaw instanceof Node) {
+        $rightVal = self::evaluateNode($rightRaw, $global, $local);
+      } else {
+        // Caso raro onde o nó não é um objeto (trata como valor/variável)
+        $rightVal = resolveValue($rightRaw, $global, $local);
+      }
+
+      // EXECUÇÃO DA OPERAÇÃO
+      $isNumeric = is_numeric($leftVal) && is_numeric($rightVal);
+
+      if ($op === '+') {
+        return $isNumeric ? ($leftVal + $rightVal) : ($leftVal . $rightVal);
+      } elseif ($op === '-') {
+        if (!$isNumeric) {
+          showException("Não é possível subtrair uma string na operação {$leftVal} - {$rightVal}");
+        }
+        return $leftVal - $rightVal;
+      } elseif ($op === '*') {
+        if (!$isNumeric) {
+          showException("Não é possível multiplicar uma string na operação {$leftVal} * {$rightVal}");
+        }
+        return $leftVal * $rightVal;
+      } elseif ($op === '/') {
+        if (!$isNumeric) {
+          showException("Não é possível dividir uma string na operação {$leftVal} / {$rightVal}");
+        }
+        return $leftVal / $rightVal;
+      }
+    }
+
+    // Se o nó não for 'Math' nem um literal
+    return false;
+  }
+}
+
+
+class AssignmentParser
+{
+
+  public static function parser(string $string)
+  {
+
+    $left = trim(strtok($string, "="));
+
+    $right = trim(strtok("="));
+
+    $node =  new Node("assignment", [], ["left" => $left, "right" => $right]);
+    return $node;
+  }
+
+  public static function evaluateNode(
+    Node $node,
+    array|object $global,
+    array|object &$local
+  ) {
+
+    $varName = resolveValue($node->params["left"], $global, $local);
+    $varValue = resolveValue($node->params["right"], $global, $local);
+
+    if (!isset($varName) || $varName === '') {
+      showException("O nome de variável '{$varName}' é inválido");
+      return;
+    }
+
+    $path = explode('.', $varName);
+    $first = array_shift($path);
+
+    if (!is_array($local)) $local = [];
+
+    if (empty($path)) {
+      // simples, nível único
+      $local[$first] = $varValue;
+      return;
+    }
+
+    // mergulha pelos níveis intermediários
+    $current = &$local;
+    foreach (array_merge([$first], $path) as $key) {
+      if (!isset($current[$key]) || !is_array($current[$key])) {
+        $current[$key] = [];
+      }
+      $prev = &$current;
+      $current = &$current[$key];
+    }
+
+    // atribui o valor final
+    $prev[$key] = $varValue;
+  }
+}
+
+
+
+
+
 
 
 class TemplateRenderer
 {
 
-  public function render($root, array $global = [], $local = []): string
+  public function render($root, array $global, &$local = []): string
   {
     // return self::renderNode($root, $global, $local);
     $pieces = [];
@@ -999,17 +1471,17 @@ class TemplateRenderer
     return implode('', $pieces);
   }
 
-  private static function renderNodeTo(Node $node, callable $writer, array $global, $local = [])
+  private static function renderNodeTo(Node $node, callable $writer, array|object $global, array|object &$local = [])
   {
+    $mathparser = null;
+    $assignparser = null;
     $type = $node->type;
     $children = (is_array($node->content)) ? $node->content : [];
 
     if ($type === "text") {
-
-      $writer(replaceVar((string)$node->content, $global, $local));
+      $writer($node->content);
       return;
     }
-
     if ($node->type === "root") {
 
       foreach ($children as $child) self::renderNodeTo($child, $writer, $global, $local);
@@ -1025,10 +1497,8 @@ class TemplateRenderer
       if ($staticText !== false) {
 
         // podemos repetir o texto N vezes sem executar renderNode para cada iteração
-        // NOTE: replaceVar no texto estático só depende de $global/$local (mesmo para todas iterações)
-        $single = replaceVar($staticText, $global, $local);
         // chunk grande aqui — mas é rápido
-        $writer(str_repeat($single, $times));
+        $writer(str_repeat($staticText, $times));
         return;
       }
 
@@ -1037,7 +1507,12 @@ class TemplateRenderer
         // você pode opcionalmente injetar uma variável de iteração no contexto:
         $localCtx['loop_index'] = $i;
         foreach ($children as $child) self::renderNodeTo($child, $writer, $global, $localCtx);
-        unset($local['loop_index']);
+        if (array_key_exists('loop_index', (array)$localCtx)) {
+          unset($localCtx['loop_index']);
+        }
+
+        // persiste alterações feitas dentro da iteração para o contexto externo
+        $local = $localCtx;
       }
       return;
     } else if ($node->type === "foreach") {
@@ -1050,12 +1525,9 @@ class TemplateRenderer
 
       $staticText = self::childrenAreStaticText($children);
       if ($staticText !== false) {
-        // só útil se o conteúdo a ser repetido não depende de item/key/loop_index
-        $single = replaceVar($staticText, $global, $local);
-        // mas se dependesse de item/key, staticText teria { } e não seria static
 
         $times = count($list);
-        $total = str_repeat($single, $times); // para listas enormes, streaming abaixo é melhor
+        $total = str_repeat($staticText, $times); // para listas enormes, streaming abaixo é melhor
         $writer($total);
         return;
       }
@@ -1074,10 +1546,13 @@ class TemplateRenderer
           self::renderNodeTo($child, $writer, $global, $localCtx);
         }
 
-        // cleanup
-        if (isset($node->params["item"]) && $node->params["item"] !== null) unset($local[$node->params["item"]]);
-        if (isset($node->params["key"]) && $node->params["key"] !== null) unset($local[$node->params["key"]]);
-        unset($local['loop_index']);
+        // cleanup apenas na cópia
+        if (isset($node->params["item"]) && $node->params["item"] !== null) unset($localCtx[$node->params["item"]]);
+        if (isset($node->params["key"]) && $node->params["key"] !== null) unset($localCtx[$node->params["key"]]);
+        if (array_key_exists('loop_index', (array)$localCtx)) unset($localCtx['loop_index']);
+
+        // persiste alterações da iteração
+        $local = $localCtx;
 
         $idx++;
       }
@@ -1130,14 +1605,46 @@ class TemplateRenderer
       return;
     } else if ($node->type === "str_filter") {
       $str = (isset($node->params["str"])) ? trim((string)$node->params["str"]) : '';
-      $str = resolveValue($str, $global, $local);
 
       $filters = (isset($node->params["filters"])) ? (array) $node->params["filters"] : [];
-
       foreach ($filters as $f) {
         $str = processFilter($str, $f, $global, $local);
       }
+
       $writer($str);
+      return;
+    } else if ($node->type === "var") {
+      $str = (isset($node->params["varStr"])) ? trim((string)$node->params["varStr"]) : '';
+      $filter = (isset($node->params["varFilter"])) ? trim((string)$node->params["varFilter"]) : "";
+      $str = replaceVar($str, $global, $local, $filter);
+
+      $writer($str);
+      return;
+    } else if ($node->type === "math") {
+      $expr = (isset($node->params["expression"])) ? trim((string)$node->params["expression"]) : '';
+      if (!isset($mathparser)) $mathparser = new MathParser();
+      $tokens = $mathparser::tokenizer($expr);
+      $node = $mathparser::parseMath($tokens);
+      $str = trim($mathparser::evaluateNode($node, $global, $local));
+
+      $writer($str);
+      return;
+    } else if ($node->type === "define") {
+      $assign = (isset($node->params["assignment"])) ? trim((string)$node->params["assignment"]) : '';
+      if (!isset($assignparser)) $assignparser = new AssignmentParser();
+      $node = $assignparser::parser($assign);
+      $assignparser::evaluateNode($node, $global, $local);
+      return;
+    } else if ($node->type === "randNum") {
+      $min = (float)$node->params["min"];
+      $max = (float)$node->params["max"];
+
+      $writer(mt_rand($min, $max));
+      return;
+    } else if ($node->type === "randStr") {
+      $len = (float)$node->params["len"];
+
+      $writer(createToken($len));
       return;
     }
 
@@ -1174,119 +1681,8 @@ class TemplateRenderer
   {
     $this->renderNodeTo($root, $writer, $global, $local);
   }
-
-  /* Versão antiga menos otimizada
-  private static function renderNode(Node $node, array $global, $local = []): string
-  {
-    $out = '';
-    $children = (is_array($node->content)) ? $node->content : [];
-
-    if ($node->type === "text") {
-
-      return replaceVar((string)$node->content, $global, $local);
-    }
-
-    if ($node->type === "root") {
-
-      foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
-      return $out;
-    } else if ($node->type === "for") {
-      $times = (int)($node->params["times"] ?? 0);
-      for ($i = 0; $i < $times; $i++) {
-        $localCtx = $local;
-        // você pode opcionalmente injetar uma variável de iteração no contexto:
-        $localCtx['loop_index'] = $i;
-        foreach ($children as $child) $out .= self::renderNode($child, $global, $localCtx);
-      }
-      return $out;
-    } else if ($node->type === "foreach") {
-      $listName = $node->params["listname"] ?? null;
-      $list = $global[$listName] ?? null;
-      if (!is_iterable($list)) return ''; // nada pra iterar
-
-      $idx = 0;
-      foreach ($list as $k => $v) {
-        // novo contexto: copia do atual, injeta locais (item e key)
-        $localCtx = $local;
-        if ($node->params["item"] !== null) {
-          $localCtx[$node->params["item"]] = $v;
-        }
-        if ($node->params["key"] !== null) {
-          $localCtx[$node->params["key"]] = $k;
-        }
-        $localCtx['loop_index'] = $idx;
-        foreach ($children as $child) $out .= self::renderNode($child, $global, $localCtx);
-        $idx++;
-      }
-      return $out;
-    } else if ($node->type === "if" || $node->type === "elseif") {
-
-      $dependents = $node->dependents ?? [];
-
-      $condRoot = $node->params['condNode'] ?? null;
-      $condVal = false;
-      if ($condRoot instanceof Node) {
-        $condVal = ConditionParser::evaluateNode($condRoot, $global, $local);
-      }
-      if ($condVal) {
-        // se a condição do if atual for verdadeira, renderiza seus filhos
-        if (ConditionParser::evaluateNode($condRoot, $global, $local)) {
-          foreach ($children as $child) {
-            $out .= self::renderNode($child, $global, $local);
-          }
-          return $out;
-        }
-      } // se o if foi falso, testa os dependents (elseif / else) em ordem
-      if (!empty($dependents) && is_array($dependents)) {
-        foreach ($dependents as $dep) {
-          if (!($dep instanceof Node)) continue;
-
-          if ($dep->type === 'elseif') {
-            // $cstr = (string)($dep->params['condition'] ?? '');
-            // $cp = new ConditionParser($cstr);
-            $cp = $dep->params['condNode'] ?? null;
-            if (ConditionParser::evaluateNode($cp, $global, $local)) {
-              // renderiza o conteúdo deste elseif e pára (comportamento de if/elseif)
-              foreach ($dep->content as $child) {
-                $out .= self::renderNode($child, $global, $local);
-              }
-              break;
-            }
-            // se false, continua para o próximo dependent
-          } elseif ($dep->type === 'else') {
-            // else não tem condição: renderiza e pára
-            foreach ($dep->content as $child) {
-              $out .= self::renderNode($child, $global, $local);
-            }
-            break;
-          }
-        }
-      }
-
-      return $out;
-    } else if ($node->type === "str_filter") {
-      $str = (isset($node->params["str"])) ? trim((string)$node->params["str"]) : '';
-      $str = resolveValue($str, $global, $local);
-
-      $filters = (isset($node->params["filters"])) ? (array) $node->params["filters"] : [];
-
-      foreach ($filters as $f) {
-        $str = processFilter($str, $f, $global, $local);
-      }
-
-      return $str;
-    }
-
-
-    if ($node->type === "else") {
-      foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
-      return $out;
-    }
-
-    foreach ($children as $child) $out .= self::renderNode($child, $global, $local);
-    return $out;
-  }*/
 }
+
 
 
 
@@ -1295,9 +1691,11 @@ class CacheManager
 {
 
   private $folderpath = '';
+  private $caching;
   private $arraysubfolders = ["templates", "parsers"];
   public function __construct(string $folderpath = __DIR__ . "/")
   {
+    $this->caching = $_ENV['APP_CACHING'] ?? true;
     $this->folderpath = rtrim($folderpath, "/") . "/";
 
     if (is_dir($folderpath)) {
@@ -1318,6 +1716,7 @@ class CacheManager
     string|int $type,
     string $secret
   ): bool {
+
     if ((is_string($type) && in_array($type, $this->arraysubfolders))) {
 
       $type = $type;
@@ -1328,6 +1727,12 @@ class CacheManager
       showException("Tipo de cache inexistente ou inválido");
       return false;
     }
+
+
+    if ($this->caching == false || $this->caching == "false") {
+      return false;
+    }
+
     $data = serialize($data);
     $inputs = serialize($inputs);
 
@@ -1342,7 +1747,7 @@ class CacheManager
     $cache = json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
     $dir = $this->folderpath . $type;
-    $filenameComp = $filename  . "." . $type . '.cache';
+    $filenameComp = $filename  . ".cache";
     $filepath = $dir . "/" . $filenameComp;
 
     if (!is_dir($dir)) {
@@ -1387,11 +1792,13 @@ class CacheManager
     string $secret
   ): mixed {
 
-    if ((is_string($type) && in_array($type, $this->arraysubfolders))) {
+    if ($this->caching == false || $this->caching == "false") {
+      return false;
+    }
 
+    if ((is_string($type) && in_array($type, $this->arraysubfolders))) {
       $type = $type;
     } elseif (key_exists($type, $this->arraysubfolders)) {
-
       $type = $this->arraysubfolders[$type];
     } else {
       showException("Tipo de cache inexistente ou inválido");
@@ -1399,11 +1806,12 @@ class CacheManager
     }
 
     $dir = $this->folderpath . $type;
-    $filenameComp = $filename  . "." . $type . '.cache';
+    $filenameComp = $filename  . '.cache';
     $filepath = $dir . "/" . $filenameComp;
     $cache = null;
 
     if (file_exists($filepath)) {
+
       $raw = file_get_contents($filepath);
       if ($raw === false) {
         showException("Falha ao ler o cache.");
@@ -1420,6 +1828,7 @@ class CacheManager
       $hash = hash_hmac("sha256", $inputs, $secret);
 
       if (hash_equals($hash, $cached["hash"])) {
+
         $cache = gzdecode(base64_decode($cached["data"]));
       } else {
         $this->dellCache($filename, $type);
@@ -1434,6 +1843,7 @@ class CacheManager
 
 
 
+
 class Template
 {
 
@@ -1441,7 +1851,6 @@ class Template
   private $filename;
   private $secret;
   private $cachedir;
-  private $canCache = true;
 
   public function __construct(
     string $name,
@@ -1476,12 +1885,10 @@ class Template
     $templateInpt = [$this->html, $data];
     $template = $cache->getCache($this->filename, $templateInpt, "templates", $this->secret);
 
-    if ($template === false || !$this->canCache) {
-      if ($parse === false || !$this->canCache) {
-
+    if ($template === false) {
+      if ($parse === false) {
 
         $parse = new TemplateParser($this->html, $data);
-
         $cache->setCache($this->filename, $parse, $parseInpt, "parsers", $this->secret);
       }
 
@@ -1502,6 +1909,10 @@ class Template
 
     $parseInpt = [$this->html];
     $parse = $cache->getCache($this->filename, $parseInpt, "parsers", $this->secret);
+
+    if ($parse === false) {
+      $parse = new TemplateParser($this->html, $data);
+    }
 
     NodeDebugger::toHtml($parse->root, ['maxDepth' => 99999, 'trimText' => 99999, 'showEmpty' => false]);
   }

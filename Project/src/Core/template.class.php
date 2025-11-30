@@ -3,6 +3,7 @@ require_once __DIR__ . "/../Parser/templateparser.class.php";
 require_once __DIR__ . "/../Render/template_renderer.class.php";
 require_once __DIR__ . "/../Debugger/node_debugger.class.php";
 require_once __DIR__ . "/../Cache/cache_manager.class.php";
+require_once __DIR__ . "/../Core/config.php";
 
 class Template
 {
@@ -11,7 +12,6 @@ class Template
   private $filename;
   private $secret;
   private $cachedir;
-  private $canCache = true;
 
   public function __construct(
     string $name,
@@ -46,12 +46,10 @@ class Template
     $templateInpt = [$this->html, $data];
     $template = $cache->getCache($this->filename, $templateInpt, "templates", $this->secret);
 
-    if ($template === false || !$this->canCache) {
-      if ($parse === false || !$this->canCache) {
-
+    if ($template === false) {
+      if ($parse === false) {
 
         $parse = new TemplateParser($this->html, $data);
-
         $cache->setCache($this->filename, $parse, $parseInpt, "parsers", $this->secret);
       }
 
@@ -72,6 +70,10 @@ class Template
 
     $parseInpt = [$this->html];
     $parse = $cache->getCache($this->filename, $parseInpt, "parsers", $this->secret);
+
+    if ($parse === false) {
+      $parse = new TemplateParser($this->html, $data);
+    }
 
     NodeDebugger::toHtml($parse->root, ['maxDepth' => 99999, 'trimText' => 99999, 'showEmpty' => false]);
   }

@@ -44,15 +44,27 @@
     },
     "filters": {
       "patterns": [
+        { "include": "#numbers" },
+        { "include": "#strings" },
+        { "include": "#comments" },
+        { "include": "#variables" },
+        { "include": "#separators" },
+        
         {
-          "name": "entity.name.function.filter.trixytpl",
-          "match": "(\\|)\\s*(\\w+(?:\\([^\\)]*\\))?)",
-          "captures":{
-            "1": {
-              "name": "keyword.operator.trixytpl"
-            }
-          }
-        }
+          "begin": "(\\|)\\s*(\\w+)(\\()?",
+          "beginCaptures": {
+            "0": { "name": "entity.name.function.filter.trixytpl" },
+            "1": { "name": "keyword.operator.trixytpl" }
+          },
+          "end": "\\)?",
+          "patterns": [
+            { "include": "#numbers" },
+            { "include": "#strings" },
+            { "include": "#comments" },
+            { "include": "#variables" }
+          ]
+        } 
+        
       ]
     },
     "separators": {

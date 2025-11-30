@@ -1,271 +1,164 @@
-# TrixyTPL — Documentação
+## 📄 TemplateEngine — Documentação Detalhada do Motor (PHP)
 
-**Resumo** este documento descreve a versão atual do motor de templates em PHP, Trixy — parser, AST de `Node`, renderer, parser de condições, debugger e utilitários. Atualizado para refletir o código fonte fornecido (funções globais e classes: `Node`, `replaceVar`, `processFilter`, `split_args`, `resolveValue`, `NodeDebugger`, `TemplateParser`, `ConditionParser`, `TemplateRenderer`, `Template`).
+**Resumo:** Este documento descreve a arquitetura e os componentes internos do **TemplateEngine**, um motor de templates em PHP contido no arquivo `TemplateEngine.min.php`. Ele abrange o processo de *parsing*, a estrutura da Árvore de Sintaxe Abstrata (**AST**), a avaliação de condições e expressões matemáticas, o sistema de *cache*, e a interface de renderização.
 
----
+-----
 
-## 1. Visão geral / fluxo
+## 1\. ⚙️ Visão Geral e Fluxo de Execução
 
-1. **Template** — carrega o arquivo `.tpl`/`.html`.
-2. **TemplateParser** — transforma o texto em uma árvore de `Node` (AST).
-3. **ConditionParser** — quando há expressões condicionais, constrói uma AST específica para avaliação.
-4. **TemplateRenderer** — percorre a árvore e gera o output final, usando `replaceVar` para variáveis e `processFilter` para filtros.
-5. **NodeDebugger** — visualização amigável da árvore para depuração.
+O motor opera através de um pipeline de três estágios principais:
 
-O motor foi projetado para ser simples, previsível e seguro (usa `htmlspecialchars` nas saídas de variáveis por padrão).
+1.  **Carregamento e Configuração:** A classe `Template` carrega o arquivo de template e configura o contexto (dados, chave secreta, diretórios de cache).
+2.  **Análise (*Parsing*):** O `TemplateParser` transforma o código do template em uma **Árvore de Sintaxe Abstrata (AST)**, estruturando-o em objetos `Node`.
+3.  **Renderização (*Rendering*):** O `TemplateRenderer` percorre a AST, resolve variáveis, executa lógicas de controle (loops/condicionais) e expressões, e gera a saída final (HTML). O `CacheManager` otimiza todo o processo, armazenando a AST e o HTML final.
 
----
+$$\text{Template File} \xrightarrow{\text{Template Class/Cache}} \text{TemplateParser (AST)} \xrightarrow{\text{TemplateRenderer}} \text{HTML Output}$$
 
-## 2. Conceitos principais
+-----
 
-### Node
+## 2\. 🧩 Conceitos e Componentes Principais
 
-A entidade básica da AST. Estrutura pública (propriedades):
+### 2.1. Classe `Node` (AST Base)
 
-* `type` — tipo do nó (`root`, `text`, `if`, `elseif`, `else`, `for`, `foreach`, `require`, `str_filter`, `comparison`, `and`, `or`, `not`, `literal`, etc.).
-* `content` — conteúdo do nó (string, array de `Node`s ou outros valores conforme o tipo).
-* `params` — parâmetros do nó (ex.: `condition`, `times`, `listname`, `item`, `key`, `archive`, etc.).
-* `dependents` — nós dependentes (ex.: `elseif`/`else` ligados a um `if`).
+É a entidade fundamental que compõe a Árvore de Sintaxe Abstrata.
 
-### Contextos de dados
+| Propriedade | Descrição |
+| :--- | :--- |
+| `type` | O tipo do nó (ex: `'root'`, `'text'`, `'var'`, `'if'`, `'foreach'`, `'math'`, `'define'`, etc.). |
+| `content` | O corpo do nó. Para nós de estrutura, é um **array de `Node`s filhos**. Para nós de texto/variável, é uma **string**. |
+| `params` | Parâmetros de configuração específicos (ex: `condition`, `listname`, `item`, `expression`). |
+| `dependents` | Armazena nós relacionados que alteram o fluxo, como `elseif` ou `else` que dependem de um nó `if`. |
 
-* **Global**: array passado em `Template::render($data)`; contém dados acessíveis por nome de variável.
-* **Local**: contexto interno gerado para loops/iteração; contém variáveis injetadas (ex.: item do `foreach`, `loop_index`, chave).
+### 2.2. Contextos de Dados
 
----
+O motor gerencia dois níveis de dados durante a renderização:
 
-## 3. Sintaxe do template
+  * **Global (`$global`):** O array de dados principal passado para `Template::render($data)`. É o contexto mais amplo.
+  * **Local (`$local`):** Um array temporário que armazena dados injetados por estruturas de controle, como a variável `$item` ou `$key` em um `foreach`, ou a variável `$loop_index` em *loops*.
 
-### 3.1 Variáveis
+### 2.3. Módulos de Parsing e Avaliação
 
-Variáveis são escritas com chaves: `{nome}`, `{usuario.email}`, `{pedido.total}`.
+| Módulo | Função | Detalhes |
+| :--- | :--- | :--- |
+| `TemplateParser` | Constrói a AST principal a partir do template, usando *regex* para identificar *tokens* e um *stack* para a hierarquia. Lida com todas as tags de estrutura e variáveis. | Suporta tags como `[if]`, `[foreach]`, `[for]`, `{require}`, `{Define}`, `{Math}`, etc. |
+| `ConditionParser` | Analisa e avalia expressões lógicas em *tokens*, parênteses e operadores (`==`, `!=`, `&&`, `||`, `!`), e constrói uma mini-AST de condição. | Chamado pelo `TemplateRenderer` quando encontra um nó `if`/`elseif`. |
+| `MathParser` | Analisa e avalia expressões matemáticas em *tokens* e resolve a ordem de precedência dos operadores. | Chamado quando o nó é do tipo `math`. |
+| `AssignmentParser` | Analisa e executa a atribuição de valores (`{Define($var = value)}`) no contexto **local**. | Suporta literais, variáveis e caminhos de ponto para atribuição. |
 
-* Suporta *dot notation* para acessar subcampos.
-* Na renderização, `_todas_` as variáveis passam por `htmlspecialchars` (ENT_QUOTES, UTF-8).
-* **Filtros simples** em variáveis: `{nome|upper}` — o filtro deve ser um único identificador (apenas `\w+`).
+-----
 
-**Exemplo:**
+## 3\. 📝 Sintaxe do Template (Tags Suportadas)
 
-```html
-Olá, {nome}! Seu e-mail: {usuario.email}.
-```
+O motor utiliza duas sintaxes de *tags*: chaves `{}` para variáveis e comandos de uma linha, e colchetes `[]` com chaves `{}` para blocos de estrutura.
 
-### 3.2 Condicionais
+### 3.1 Variáveis e Filtros
 
-Blocos condicionais usam colchetes e chaves com sintaxe:
+Variáveis são resolvidas com a função **`replaceVar`** e acessam dados usando a **notação de ponto** (*dot notation*).
 
-```text
-[if <expressão> {
-  ...
-} elseif <expressão> {
-  ...
-} else {
-  ...
-}]
-```
+  * **Exemplo:** `{usuario.endereco.cidade}`
+  * **Filtros:** Podem ser aplicados com o *pipe* (`|`). Ex: `{nome|upper}`, `{data|date('Y-m-d')}`.
+  * **Segurança:** Todas as variáveis renderizadas passam por **`htmlspecialchars`** (com `ENT_QUOTES|ENT_SUBSTITUTE`, UTF-8) para prevenir ataques XSS, a menos que um filtro como `|raw` seja implementado para sobrescrever esse comportamento (não implementado explicitamente no código fornecido).
 
-* Operadores suportados: `==`, `=`, `!=`, `!==`, `===`, `>`, `<`, `>=`, `<=`.
-* Conectivos: `&&`, `||`, `!`.
-* Parênteses `()` são aceitos e respeitados pela prioridade.
+### 3.2 Estruturas de Controle
 
-*Observação:* o `ConditionParser` tokeniza comparações e monta uma AST composta por nós `comparison`, `and`, `or`, `not` e `literal`.
+| Estrutura | Sintaxe (Exemplo) | Variáveis Locais |
+| :--- | :--- | :--- |
+| **Condicional** | `[if cond { ... } elseif cond { ... } else { ... }]` | Nenhuma |
+| **Foreach** | `[foreach $listname as $key => $item { ... }]` | `$item`, `$key`, `$loop_index` (0-based) |
+| **For** | `[for $times { ... }]` | `$loop_index` (0-based) |
 
-### 3.3 Loops
+### 3.3 Comandos Úteis
 
-#### For
+| Comando | Sintaxe (Exemplo) | Função |
+| :--- | :--- | :--- |
+| **Inclusão** | `{require('header.tpl')}` | Inclui e analisa um sub-template (usa `TemplateParser::requireParser`). |
+| **Atribuição** | `{Define($var = 100)}` | Define uma variável no contexto local. |
+| **Matemática** | `{Math(5 + $var * 2)}` | Calcula e exibe o resultado da expressão. |
+| **Filtro Avançado** | `{str_filter($var, (trim, upper))}` | Aplica múltiplos filtros a uma variável ou string literal. |
 
-```text
-[for 3 {
-  Iteração: {loop_index}
-}]
-```
+-----
 
-* Repete o bloco N vezes, pode ser um número ou uma variável. 
-* `loop_index` (0-based) está disponível no contexto local.
+## 4\. 🛠️ Funções Utilitárias e Resolução de Valores
 
-#### Foreach
+O código se baseia em um conjunto de funções globais para manipulação de dados:
 
-```text
-[foreach usuarios as usuario {
-  Nome: {usuario.nome}
-}]
-```
+  * **`replaceVar()`**: Resolve o valor de uma variável (`$var`), navegando por *dot notation* e aplicando o **`processFilter()`** opcional.
+  * **`processFilter()`**: Recebe uma string e aplica um filtro. Suporta filtros simples (como `upper`, `strip_tags`) e filtros complexos com argumentos (como `date(format)`, `number_format(dec, sep, thousands)`).
+  * **`resolveValue()`**: Funçao chave para interpretação de *tokens*. Determina se uma string de entrada é uma **literal** (string, número, boolean) ou uma **variável**, retornando o valor correto.
+  * **`resolvePath()`**: Navega em profundidade em arrays ou objetos PHP usando uma string de caminho de ponto (ex: `"usuario.email"`).
+  * **`split_args()`**: Utilizado pelo *parser* para dividir argumentos de funções/filtros (ex: `date('Y-m-d')`) sem quebrar ao encontrar vírgulas dentro de aspas ou parênteses.
 
-Com chave e valor:
+-----
 
-```text
-[foreach pedidos as id => pedido {
-  Pedido #{id}: {pedido.valor}
-}]
-```
+## 5\. 🚀 TemplateRenderer — Otimização e Comportamento
 
-* `listname` (a lista a ser iterada) é resolvida por `resolvepath` no contexto global
-* `item` e `key` são injetados no contexto local do bloco.
-* `loop_index` também é criado para cada iteração.
+O `TemplateRenderer` é responsável por gerar o output final.
 
-### 3.4 Require (inclusão)
+  * **Método `renderNodeTo`**: Percorre a AST. Para nós de texto, envia o conteúdo. Para nós lógicos, executa a avaliação antes de chamar a renderização recursiva.
+  * **Otimização de Loops (Foreach/For)**: O motor verifica se o conteúdo de um *loop* (os nós filhos) é composto **apenas por texto estático** (`childrenAreStaticText`). Se for, ele renderiza o bloco uma única vez e usa **`str_repeat`** para gerar o HTML do loop N vezes, economizando o custo da recursão em cada iteração.
+  * **Gerenciamento de Contexto**: Para cada iteração de *loop* ou chamada de bloco, ele atualiza a cópia do contexto `$local` com as variáveis injetadas (ex: `$item`, `$loop_index`).
 
-Sintaxe suportada:
+-----
 
-```
-[require "arquivo.tpl"]
-[require 'outro.tpl']
-[require nome_variavel]   # resolveValue() é chamado para obter o nome
-```
+## 6\. 💾 CacheManager — Sistema de Cache
 
-* O motor usa `TemplateParser::requireParser()` para ler o arquivo e inserir a subárvore.
-* O nome do arquivo passa por `resolveValue()`, permitindo usar variáveis no nome.
-* Se o arquivo não existir, `showRunTimeExcept()` é chamado (lança e imprime uma RuntimeException amigável).
+A classe `CacheManager` implementa um sistema de *cache* de dois níveis para otimizar a performance.
 
-### 3.5 str_filter
+| Tipo de Cache | Conteúdo Armazenado | Fator de Validação (Hash) | Benefício |
+| :--- | :--- | :--- | :--- |
+| **`parsers`** | **AST** (Árvore de `Node`s) serializada. | Conteúdo do arquivo de template. | Evita o custoso processo de *parsing* se o template não mudar. |
+| **`templates`** | **HTML Final** (string renderizada). | Conteúdo do template **e** os dados (`$data`) fornecidos. | Evita *parsing* **e** *renderização* se nem o template nem os dados mudarem. |
 
-Forma para aplicar filtros complexos diretamente sobre uma string literal, variável ou expressão:
+**Mecanismo:**
 
-```
-[str_filter("texto qualquer", (filter1, filter2(param1,param2)))]
-```
+  * O *cache* é validado usando **`hash_hmac("sha256", $inputs, $secret)`**.
+  * Os dados são salvos com compressão (`gzencode`) e codificação (`base64`) após serialização (`serialize`).
 
-Internamente o parser avalia o primeiro argumento com `resolveValue()` e cada filtro com `processFilter()`.
+-----
 
----
+## 7\. 💻 API Pública e Debugging
 
-## 4. Filtros (processFilter)
+### Classe `Template`
 
-Dois modos:
+A interface principal para o desenvolvedor:
 
-* **Filtro simples** (nome): usado via `{var|upper}` ou via `str_filter` (quando fornecido apenas o nome). Implementados: `strip_tags`, `trim`, `nl2br`, `upper`, `lower`, `capitalize`, `ufirst`, `length`.
+  * **`__construct(string $name, string $secret, string $cachedir, string $envdir)`**: Inicializa o motor, carregando o template `$name` e configurando o `CacheManager` com o `$secret` e `$cachedir`.
+  * **`render(array $data)`**: O método de execução. Segue o fluxo de cache (tenta `templates`, depois `parsers`, se falhar, faz *parsing* e *renderização*), e exibe o HTML final via `echo`.
+  * **`debug(array $data)`**: Executa o *parsing* (com cache de `parsers`) e exibe a AST formatada em HTML, usando a classe **`NodeDebugger`**.
 
-* **Filtro complexo** (com sintaxe de função): servido por `processFilter` e por `{var|upper}` quando a string do filtro tem a forma `name(params...)`. Implementados no código atual:
+### Classe `NodeDebugger`
 
-  * `date(format)` — converte string para data via `strtotime` e `date(format, time)` (atenção: comportamento atual precisa atribuir o resultado à variável `$str`).
-  * `number_format(decimals, decimal_sep, thousands_sep)` — wrapper para `number_format`.
-  * `replace(search, replace, countFlag)` — `str_replace` (o tratamento do parâmetro `count` tem comportamento especial se for `true`).
-  * `round(precision, mode)` — suporta modos por nome (`ROUND_HALF_UP`, etc.) ou valor numérico.
-  * `truncate(limit, suffix)` — recorta strings via `str_truncate()`.
+Ferramenta estática para visualizar a estrutura da AST:
 
----
+  * **`NodeDebugger::toHtml($node, $opts)`**: Renderiza a estrutura da AST dentro de uma *tag* `<pre>` HTML para facilitar a leitura no navegador.
 
-## 5. Funções utilitárias importantes
+-----
 
-* `replaceVar($block, $global, $local)` — encontra `{var}` e `{var|filter}` no bloco e substitui, resolvendo dot-notation e aplicando `htmlspecialchars` + `processFilter`.
-
-* `processFilter(string $str, string|null $filter, $global, $local)` — aplica filtros simples ou complexos.
-
-* `split_args($separator, $str, $starts = "([{", $ends = ")]}")` — explode inteligente que respeita parênteses, colchetes e aspas.
-
-* `str_truncate($str, $limit, $suffix)` — recorta string adicionando sufixo quando necessário.
-
-* `resolveValue(string $str, $global, $local)` — interpreta literais (strings entre aspas), arrays literais (`[...]`), números, booleans (`true/false/null`) ou resolve variáveis via `replaceVar`.
-
-* `trim_once($str, $start, $end = '')` — remove o caractere inicial/final se coincidir.
-
-* `showRunTimeExcept($message)` — lança e imprime uma `RuntimeException` com rastreamento para debug (útil em desenvolvimento).
-
-* `resolvePath(string $path, $context)` — navega em dot-notation (`path.to.value`) em arrays ou objetos.
-
----
-
-## 6. ConditionParser — detalhes de avaliação
-
-* `tokenizer()` produz tokens: `(`, `)`, `&&`, `||`, `!` e nós `comparison` (que carregam `left`, `op`, `right`).
-* `parseCondition()` monta uma estrutura com `and`/`or` e nós `not` quando apropriado.
-* `evaluateNode(Node $node, $global, $local)` — avalia recursivamente a AST de condição; o nó `comparison` usa `resolveValue()` para ler valores à esquerda/direita e aplica o operador.
-
----
-
-## 7. TemplateRenderer — comportamento de render
-
-* O método principal é `renderNodeTo` (chamado por `render`), que usa um callable (`$writer`) para emitir pedaços do output. Isso é uma técnica de streaming (em vez de concatenar uma string enorme) e permite otimizações.
-* **Otimização** `for/foreach`: `childrenAreStaticText` verifica se o conteúdo do loop é composto apenas por texto sem placeholders (`{}`). Se for, o bloco é renderizado uma única vez e repetido `N` vezes com `str_repeat`, evitando a recursão do renderNodeTo em cada iteração.
-* **Condicionais**: O tratamento de `if/elseif/else` itera os `dependents` para encontrar a primeira condição verdadeira, renderizando seu conteúdo e parando.
----
-
-## 8. NodeDebugger — uso
-
-* `NodeDebugger::dump($root)` — imprime texto bruto (CLI/browser).
-* `NodeDebugger::toHtml($root, $opts)` — imprime HTML com a árvore dentro de `<pre>` (opções: `maxDepth`, `trimText`, `showEmpty`).
-
-Exemplo de uso na aplicação:
+## Exemplo de Uso (PHP)
 
 ```php
-$template = new Template("exemplo.tpl");
-$template->debug($data);
+// Instancia o motor de templates
+$t = new Template(
+    'caminho/para/meu_template.tpl', 
+    'minha_chave_secreta_aqui', 
+    '/tmp/cache_templates', 
+    '/caminho/.env'
+);
+
+// Dados a serem injetados no template
+$data = [
+    'titulo' => 'Relatório Mensal',
+    'produtos' => [
+        ['nome' => 'Caneta', 'preco' => 2.50],
+        ['nome' => 'Caderno', 'preco' => 15.90]
+    ]
+];
+
+// Renderiza e exibe o template
+$t->render($data);
+
+// Para depurar a AST
+// $t->debug($data); 
 ```
 
----
-
-# 9. CacheManager — sistema de cache
-A classe `CacheManager` gerencia o cache da árvore de parsing e do template renderizado final.
-
-* **Localização:** Os caches são salvos em subpastas (`templates`, `parsers`) dentro do diretório `$cachedir` (passado para `Template`).
-
-* **Tipos de Cache:**
-
-  * `parsers`: Guarda a AST (`TemplateParser` ou subárvores) baseada no conteúdo do template.
-
-  * `templates`: Guarda o template renderizado final em string.
-
-* **Validação (Hash):** O cache é validado por um `hash_hmac("sha256", $inputs, $secret)`.
-
-  * Cache de parsers usa o conteúdo do template como `$inputs`.
-
-  * Cache de templates usa o conteúdo do template e os dados (`$data`) como `$inputs`.
-
-* Funções:
-
-  * `setCache($filename, $data, $inputs, $type, $secret)` — Serializa, comprime (`gzencode`), codifica (`base64`) e salva o cache com o hash.
-
-  * `getCache($filename, $inputs, $type, $secret)` — Recupera, verifica o hash, e deserializa (`unserialize`). Se o hash falhar, o cache é deletado (`dellCache`).
-
-  * `dellCache($filename, $type)` — Remove o arquivo de cache.
-
----
-
-## 10. API pública — classe Template
-
-* `new Template(string $name, string $secret, string $cachedir, string $envdir)` — Construtor que lê o arquivo `$name`, define o `$secret` para o cache, o diretório `$cachedir` e carrega variáveis de ambiente de `$envdir`.
-* `render(array $data)` — Tenta obter o template renderizado do cache (`templates`). Se falhar, tenta obter a AST do cache (`parsers`). Se falhar, faz o parsing, renderiza o resultado e salva ambos os caches, exibindo o resultado com `echo`.
-* `debug(array $data)` — Tenta obter a AST do cache (`parsers`). Se falhar, faz o parsing. Em seguida, mostra a árvore com `NodeDebugger::toHtml()`.
-
----
-
-## 10. Exemplos rápidos
-
-Template (`exemplo.tpl`):
-
-```html
-<h1>Olá, {nome}!</h1>
-[if usuario.idade >= 18 {
-  <p>Maior de idade</p>
-} else {
-  <p>Menor de idade</p>
-}]
-```
-
-Render (PHP):
-
-```php
-// Assumindo que estas constantes estão definidas ou carregadas no .env
-$secret = 'minha_chave_secreta'; 
-$cachedir = __DIR__ . '/cache'; 
-$envdir = __DIR__ . '/.env';
-
-$t = new Template('exemplo.tpl', $secret, $cachedir, $envdir);
-$t->render(['nome' => 'Rian', 'usuario' => ['idade' => 25]]);
-```
----
-
-## Licença
-
-```
-License: Apache 2.0
-```
-
----
-
-## 12. Futuras extensões
-
-1. Estrutua SOLID.
-2. Sistema de salvar variáveis em contexto `global`.
-3. Sistema de realizar operações
-4. Sistema de string randômica
+-----

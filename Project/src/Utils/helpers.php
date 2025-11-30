@@ -1,55 +1,49 @@
 <?php
+
 if (!function_exists("replaceVar")) {
-  function replaceVar($block, $global, $local = [])
+  function replaceVar($var, $global, $local = [], $filter = '')
   {
+    $var = ltrim($var, "$");
 
-    return preg_replace_callback(
-      '/\{\s*
-      (?P<var>[a-zA-Z_]\w*  (?:\.[a-zA-Z_0-9]\w*)*)
-        (?:\s*\|\s*
-            (?P<filter>.*?) # {var| f1}
-        )?
-      \s*\}/xs',
-      function ($m) use ($global, $local) {
-        $var = $m["var"];
-        $filter = $m["filter"] ?? null;
-        $data = $global ?? '';
-        $return = '';
+    $data = $global ?? [];
+    $return = '';
 
-        $path = explode(".", $var);
-        $first = array_shift($path);
+    $path = explode(".", $var);
+    $first = array_shift($path);
 
-        if (is_array($local)) $data = (array_key_exists($first, $local)) ?
-          $local[$first] : ($global[$first] ?? '');
+    if (is_array($local)) {
+      $data = (array_key_exists($first, $local)) ?
+        $local[$first] : ($global[$first] ?? '');
+    }
+    $index = $data;
 
-        $index = $data;
-        foreach ($path as $i) {
-          if (is_array($index) && array_key_exists($i, $index)) {
+    foreach ($path as $i) {
 
-            $index = $index[$i];
-          } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
+      if (is_array($index) && array_key_exists($i, $index)) {
 
-            $index = $index[$i];
-          } else if (
-            is_object($index) &&
-            (property_exists($index, $i) || isset($index->$i))
-          ) {
+        $index = $index[$i];
+      } else if ($index instanceof ArrayAccess && $index->offsetExists($i)) {
 
-            $index = $index->$i;
-          } else {
+        $index = $index[$i];
+      } else if (
+        is_object($index) &&
+        (property_exists($index, $i) || isset($index->$i))
+      ) {
 
-            $index = null;
-            break;
-          }
-        }
-        $return = (isset($index)) ? $index : '';
+        $index = $index->$i;
+      } else {
 
-        $return = processFilter($return, $filter, $global, $local);
+        $index = null;
+        break;
+      }
+    }
+    $return = (isset($index)) ? $index : '';
 
-        return $return;
-      },
-      $block
-    );
+
+    if (isset($filter) && $filter !== '') $return = processFilter("'{$return}'", $filter, $global, $local);
+
+
+    return $return;
   }
 }
 if (!function_exists("processFilter")) {
@@ -59,6 +53,7 @@ if (!function_exists("processFilter")) {
     array | object $global,
     array | object $local = []
   ): string {
+    $str = resolveValue($str, $global, $local);
     // se houver processa os filtros
     if (isset($filter) && !empty($filter)) {
       // se houver processa os filtros complexos
@@ -69,7 +64,6 @@ if (!function_exists("processFilter")) {
         foreach ($params as $key => $value) {
           $params[$key] = resolveValue($value, $global, $local);
         }
-        $str = resolveValue($str, $global, $local);
 
         switch ($command) {
           case 'date':
@@ -282,9 +276,18 @@ if (!function_exists("resolveValue")) {
       else if (in_array(strtolower($str), ["true", "false", "null"])) {
         $map = ['true' => true, 'false' => false, 'null' => null];
         $str = $map[strtolower($str)];
-      } else {
+      } else if (preg_match('/[\+\-\*\/\(\)]/', $str)) {
+        try {
+          $tokens = MathParser::tokenizer($str);
+          $mathNode = MathParser::parseMath($tokens);
+          $str = MathParser::evaluateNode($mathNode, $global, $local);
+        } catch (\Exception $e) {
+          // fallback: retorna string original se não for possível avaliar
+          $str = "";
+        }
+      } else if (preg_match('/' . Config::VAR_PATTERN . '/', $str)) {
         // trata como variável
-        $str = replaceVar('{' . $str . '}', $global, $local);
+        $str = replaceVar($str, $global, $local);
       }
     }
     return $str;
@@ -344,5 +347,20 @@ if (!function_exists("resolvePath")) {
       }
     }
     return $context;
+  }
+}
+
+
+if (!function_exists("createToken")) {
+  function createToken(int $len = 16)
+  {
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
+    $token = [];
+
+    for ($i = 0; $i < $len; $i++) {
+      $token[] = $chars[random_int(0, strlen($chars) - 1)];
+    }
+
+    return implode("", $token);
   }
 }

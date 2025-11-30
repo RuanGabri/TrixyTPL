@@ -4,18 +4,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{title | capitalize}</title>
+  <title>{$title | capitalize}</title>
 
 
   <link rel="stylesheet" type="text/css" href="bootstrap.min.css">
 </head>
 
-<body>
-
-  [foreach data.user as u { {u.name} <br>}]
-
-
-
+{ random_num(100,78)}
+{random_str(100)}
 
 </body>
 
